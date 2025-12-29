@@ -82,7 +82,7 @@ status_sel = st.sidebar.selectbox("対応状況", status_options)
 assignees = sorted(df["更新者"].dropna().unique().tolist())
 assignee_sel = st.sidebar.multiselect("担当者", assignees)
 
-kw = st.sidebar.text_input("キーワード（タスク/備考/次アクション）")
+kw = st.sidebar.text_input("キーワード（更新日/タスク/備考/次アクション）")
 
 view_df = df.copy()
 if status_sel != "すべて":
