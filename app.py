@@ -3,6 +3,18 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import uuid
+from zoneinfo import ZoneInfo  # ★ 追加：タイムゾーン
+
+# ===== タイムゾーン・ヘルパー =====
+JST = ZoneInfo("Asia/Tokyo")
+
+def now_jst() -> datetime:
+    """現在日時（JST）"""
+    return datetime.now(JST)
+
+def today_jst():
+    """今日（日付のみ, JST）"""
+    return now_jst().date()
 
 # ===== ページ設定 =====
 st.set_page_config(page_title="タスク管理ボード", layout="wide")
@@ -53,7 +65,7 @@ def load_tasks() -> pd.DataFrame:
 
 def save_tasks(df: pd.DataFrame):
     df_out = df.copy()
-    # 日付を ISO 保存
+    # 日付を ISO 保存（YYYY-MM-DD）
     for col in ["起票日", "更新日"]:
         df_out[col] = pd.to_datetime(df_out[col], errors="coerce").dt.strftime("%Y-%m-%d")
     df_out.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
@@ -106,8 +118,8 @@ st.dataframe(view_df.sort_values("更新日", ascending=False), use_container_wi
 
 # ===== クローズ候補 =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
-now = pd.Timestamp.now()
-threshold = now - pd.Timedelta(days=7)
+now_ts = pd.Timestamp(now_jst())                # ★ JST 現在
+threshold = now_ts - pd.Timedelta(days=7)
 in_progress = df[df["対応状況"].str.contains("対応中", na=False)]
 reply_df = df[reply_mask]
 closing_candidates = in_progress[in_progress.index.isin(reply_df.index)]
@@ -125,7 +137,7 @@ else:
     )
     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
-        df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp.now()
+        df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(today_jst())  # ★ JSTの“今日”
         save_tasks(df)
         st.success(f"{len(to_close_ids)}件をクローズに更新しました。")
         st.cache_data.clear()
@@ -135,8 +147,8 @@ else:
 st.subheader("新規タスク追加")
 with st.form("add"):
     c1, c2, c3 = st.columns(3)
-    created = c1.date_input("起票日", datetime.today())
-    updated = c2.date_input("更新日", datetime.today())
+    created = c1.date_input("起票日", today_jst())  # ★ JST
+    updated = c2.date_input("更新日", today_jst())  # ★ JST
     status = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
 
     task = st.text_input("タスク（件名）")
@@ -189,10 +201,12 @@ else:
     with st.form(f"edit_task_{choice_id}"):
         c1, c2, c3 = st.columns(3)
         task_e = c1.text_input("タスク（件名）", df_by_id.loc[choice_id, "タスク"], key=f"task_{choice_id}")
-        status_e = c2.selectbox("対応状況", ["未対応", "対応中", "クローズ"],
-                                index=(["未対応","対応中","クローズ"].index(df_by_id.loc[choice_id,"対応状況"])
-                                       if df_by_id.loc[choice_id,"対応状況"] in ["未対応","対応中","クローズ"] else 1),
-                                key=f"status_{choice_id}")
+        status_e = c2.selectbox(
+            "対応状況", ["未対応", "対応中", "クローズ"],
+            index=(["未対応","対応中","クローズ"].index(df_by_id.loc[choice_id,"対応状況"])
+                   if df_by_id.loc[choice_id,"対応状況"] in ["未対応","対応中","クローズ"] else 1),
+            key=f"status_{choice_id}"
+        )
 
         ass_choices_e = sorted(set(df["更新者"].tolist() + ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"]))
         default_assignee = df_by_id.loc[choice_id, "更新者"]
@@ -220,7 +234,7 @@ else:
         df.loc[df["ID"] == choice_id, ["タスク","対応状況","更新者","次アクション","備考","ソース"]] = [
             task_e, status_e, assignee_e, next_action_e, notes_e, source_e
         ]
-        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp.now()
+        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(today_jst())  # ★ JSTの“今日”
         save_tasks(df)
         st.success("タスクを更新しました。")
         st.cache_data.clear()
