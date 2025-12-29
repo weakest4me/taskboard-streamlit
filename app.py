@@ -116,9 +116,11 @@ col4.metric("返信待ち系", reply_count)
 st.subheader("一覧")
 st.dataframe(view_df.sort_values("更新日", ascending=False), use_container_width=True)
 
+
 # ===== クローズ候補 =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
-now_ts = pd.Timestamp(now_jst())                # ★ JST 現在
+- now_ts = pd.Timestamp(now_jst())                # ★ JST 現在（tz-aware）
++ now_ts = pd.Timestamp(now_jst()).tz_localize(None)  # ★ JST 現在 → tz-naive に変換
 threshold = now_ts - pd.Timedelta(days=7)
 in_progress = df[df["対応状況"].str.contains("対応中", na=False)]
 reply_df = df[reply_mask]
