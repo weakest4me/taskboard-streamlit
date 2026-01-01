@@ -360,9 +360,8 @@ threshold_dt = now_ts - pd.Timedelta(days=7)
 
 in_progress = df[df["対応状況"].eq("対応中")]
 reply_df = df[reply_mask]
-closing_candidates = in_progress[in_progress.index.isin(reply_df.index)]
+closing_candidates = in_progress[in_progress.index.isin(reply_df.index)].copy()
 
-closing_candidates = closing_candidates.copy()
 closing_candidates["更新日"] = pd.to_datetime(closing_candidates["更新日"], errors="coerce")
 # 混在対策: tz付きだけ tz を外す
 try:
