@@ -4,6 +4,8 @@ import pandas as pd
 from datetime import datetime
 import uuid
 from zoneinfo import ZoneInfo  # タイムゾーン（Python 3.9+）
+
+# --- GitHub API 用 ---
 import base64
 import requests
 
@@ -70,28 +72,42 @@ def save_tasks(df: pd.DataFrame):
         df_out[col] = pd.to_datetime(df_out[col], errors="coerce").dt.strftime("%Y-%m-%d")
     df_out.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
 
-# ===== GitHubへコミット保存 =====
-def save_to_github_csv(local_path: str = CSV_PATH):
-    """ローカルCSVを GitHub の指定パスへコミット（Secrets 必須）"""
-    try:
-        token  = st.secrets["GITHUB_TOKEN"]
-        owner  = st.secrets["GITHUB_OWNER"]
-        repo   = st.secrets["GITHUB_REPO"]
-        path   = st.secrets["GITHUB_PATH"]
-        branch = st.secrets.get("GITHUB_BRANCH", "main")
-    except Exception:
-        st.info("GitHub Secrets が未設定のため、コミット保存をスキップしました。")
+# ===== GitHubへコミット保存（診断付き） =====
+def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
+    """ローカルCSVを GitHub の指定パスへコミット保存（原因の見える化）
+    - debug=True で GET/PUT の HTTPステータスと応答の先頭を画面に表示
+    必要なSecrets:
+      GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO / GITHUB_PATH / (任意) GITHUB_BRANCH
+    """
+    # Secrets チェック
+    required_keys = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PATH"]
+    missing = [k for k in required_keys if k not in st.secrets]
+    branch = st.secrets.get("GITHUB_BRANCH", "main")
+    if missing:
+        st.error(f"Secrets が不足しています: {missing}（Manage app → Settings → Secrets を確認）")
         return
 
-    try:
-        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-        headers = {"Authorization": f"token {token}"}
+    token = st.secrets["GITHUB_TOKEN"]
+    owner = st.secrets["GITHUB_OWNER"]
+    repo  = st.secrets["GITHUB_REPO"]
+    path  = st.secrets["GITHUB_PATH"]
 
-        # 既存ファイルのSHA取得（更新に必要）
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "streamlit-app",
+    }
+
+    try:
+        # 既存ファイルの SHA 取得（更新時は必須）
         r = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
+        if debug:
+            st.write({"GET_status": r.status_code, "GET_text": r.text[:300]})
         sha = r.json().get("sha") if r.status_code == 200 else None
 
-        # CSVをbase64化
+        # CSV → base64
         with open(local_path, "rb") as f:
             content_b64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -102,15 +118,27 @@ def save_to_github_csv(local_path: str = CSV_PATH):
             "branch": branch,
         }
         if sha:
-            payload["sha"] = sha
+            payload["sha"] = sha  # 既存更新時は必須
 
         put = requests.put(url, headers=headers, json=payload, timeout=20)
+        if debug:
+            st.write({"PUT_status": put.status_code, "PUT_text": put.text[:500]})
+
+        # ステータス別ガイダンス
         if put.status_code in (200, 201):
             st.toast("GitHubへ保存完了", icon="✅")
+        elif put.status_code == 401:
+            st.error("401 Unauthorized: トークン無効（期限切れ／Revoke）。→ 新しいPATをSecretsへ。")
+        elif put.status_code == 403:
+            st.error("403 Forbidden: 権限不足 / 組織承認未完了 / ブランチ保護で拒否。→ PAT権限『Contents: Read and write』・Org承認・保存用ブランチの利用を確認。")
+        elif put.status_code == 404:
+            st.error("404 Not Found: OWNER/REPO/PATH/BRANCH の不一致。→ Secretsと実URL/パスを再確認。")
+        elif put.status_code == 422:
+            st.error("422 Unprocessable: SHA不正 or 保護ルール違反。→ ブランチ保護／payload を確認。")
         else:
-            st.error(f"GitHub保存失敗: {put.status_code} {put.text}")
+            st.error(f"GitHub保存失敗: {put.status_code} {put.text[:300]}")
     except Exception as e:
-        st.error(f"GitHub保存中に例外が発生: {e}")
+        st.error(f"GitHub保存中に例外: {e}")
 
 # ===== データ読み込み =====
 df = load_tasks()
@@ -187,7 +215,7 @@ else:
         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
         df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(today_jst())
         save_tasks(df)
-        save_to_github_csv()  # ★ GitHubへコミット
+        save_to_github_csv(debug=False)  # GitHubへコミット
         st.success(f"{len(to_close_ids)}件をクローズに更新しました。")
         st.cache_data.clear()
         st.rerun()
@@ -223,7 +251,7 @@ with st.form("add"):
         }
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         save_tasks(df)
-        save_to_github_csv()  # ★ GitHubへコミット
+        save_to_github_csv(debug=False)
         st.success("追加しました。")
         st.cache_data.clear()
         st.rerun()
@@ -285,7 +313,7 @@ else:
         ]
         df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(today_jst())
         save_tasks(df)
-        save_to_github_csv()  # ★ GitHubへコミット
+        save_to_github_csv(debug=False)
         st.success("タスクを更新しました。")
         st.cache_data.clear()
         st.rerun()
@@ -294,7 +322,7 @@ else:
         if confirm_word.strip().upper() == "DELETE":
             df = df[~df["ID"].eq(choice_id)].copy()
             save_tasks(df)
-            save_to_github_csv()  # ★ GitHubへコミット
+            save_to_github_csv(debug=False)
             st.session_state.pop("selected_id", None)
             st.success("タスクを削除しました。")
             st.cache_data.clear()
@@ -315,16 +343,22 @@ if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
     if confirm_word_bulk.strip().upper() == "DELETE":
         df = df[~df["ID"].isin(del_targets)].copy()
         save_tasks(df)
-        save_to_github_csv()  # ★ GitHubへコミット
+        save_to_github_csv(debug=False)
         st.success(f"{len(del_targets)}件のタスクを削除しました。")
         st.cache_data.clear()
         st.rerun()
     else:
         st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
 
-# ===== サイドバー：手動コミット（任意） =====
-if st.sidebar.button("GitHubへ手動保存を実行"):
-    save_to_github_csv()
+# ===== サイドバー：手動保存＆診断 =====
+colA, colB = st.sidebar.columns(2)
+if colA.button("GitHubへ手動保存"):
+    save_to_github_csv(debug=False)
+if colB.button("GitHub保存の診断"):
+    save_to_github_csv(debug=True)   # ステータスと応答の先頭を表示
+
+# 任意：Secretsのキー一覧（値は表示しない）
+st.sidebar.caption(f"Secrets keys: {list(st.secrets.keys())}")
 
 # ===== フッター =====
 st.caption("※ この試作はローカルCSV保存です。複数人での同時編集には SharePoint/Dataverse/Database を推奨。GitHub連携でCSVの永続化が可能です。")
