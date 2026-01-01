@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
@@ -22,15 +23,12 @@ def _parse_bool(v, default=True):
 
 SAVE_WITH_TIME = _parse_bool(st.secrets.get("SAVE_WITH_TIME", True))  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
 
-
 def now_jst() -> datetime:
     return datetime.now(JST)
-
 
 def now_jst_str() -> str:
     fmt = "%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d"
     return now_jst().strftime(fmt)
-
 
 def today_jst() -> date:
     return now_jst().date()
@@ -53,14 +51,12 @@ def _get_query_params():
         # 旧版のフォールバック
         return {k: (v[0] if isinstance(v, list) and v else v) for k, v in st.experimental_get_query_params().items()}
 
-
 def _clear_query_params():
     try:
         st.query_params.clear()
     except Exception:
         # 旧版は空で上書き
         st.experimental_set_query_params()
-
 
 qp = _get_query_params()
 edit_param = qp.get("edit")
@@ -72,15 +68,12 @@ if edit_param:
 # ===== ユーティリティ =====
 MISSING_SET = {"", "none", "null", "nan", "na", "n/a", "-", "—"}
 
-
 def _ensure_str(x) -> str:
     return "" if x is None else str(x)
-
 
 def _is_missing(x) -> bool:
     s = _ensure_str(x).strip().lower()
     return s in MISSING_SET
-
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     # 列名の単純正規化（全角スペース→半角、前後空白除去）
@@ -117,7 +110,6 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
     return df.reset_index(drop=True)
 
-
 @st.cache_data(ttl=30)
 def load_tasks() -> pd.DataFrame:
     try:
@@ -129,7 +121,6 @@ def load_tasks() -> pd.DataFrame:
     df = safety_autofill_all(df)
     return df
 
-
 def _format_date_for_save(dt: pd.Timestamp) -> str:
     if pd.isna(dt):
         return now_jst_str()  # 欠損は“いま”
@@ -138,8 +129,7 @@ def _format_date_for_save(dt: pd.Timestamp) -> str:
     else:
         return pd.to_datetime(dt).strftime("%Y-%m-%d")
 
-
-ndef save_tasks(df: pd.DataFrame):
+def save_tasks(df: pd.DataFrame):
     """保存前に安全弁をかけ、CSVへ書き出し"""
     df_out = safety_autofill_all(df.copy())
     for col in ["起票日", "更新日"]:
@@ -147,7 +137,6 @@ ndef save_tasks(df: pd.DataFrame):
     df_out.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
 
 # ===== 日付の安全弁（全行） =====
-
 def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
     now_ts = pd.Timestamp(now_jst())
     # 起票日は欠損のみ補完（既存起票日は維持）
@@ -157,7 +146,6 @@ def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ===== GitHubへコミット保存（診断付き） =====
-
 def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
     required_keys = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PATH"]
     missing = [k for k in required_keys if k not in st.secrets]
@@ -263,12 +251,10 @@ col4.metric("返信待ち系", reply_count)
 # ===== 一覧 =====
 st.subheader("一覧")
 
-
 def _fmt_display(dt: pd.Timestamp) -> str:
     if pd.isna(dt):
         return "-"
     return dt.strftime("%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d")
-
 
 disp = view_df.copy()
 disp["起票日"] = disp["起票日"].apply(_fmt_display)
