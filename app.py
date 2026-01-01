@@ -1,11 +1,12 @@
 
-# app.py（完全版：直保存方式＋サイドバー・フィルター常時表示＋診断エクスパンダ）
+# app.py（完全版：直保存方式＋フィルター常時表示＋診断エクスパンダ＋コミット名入り）
 # ------------------------------------------------------------
-# 変更操作（追加／編集／削除／クローズ）後に
+# 操作後（追加／編集／削除／クローズ）に
 #   1) ローカル保存 → 2) GitHubコミット → 3) キャッシュクリア → 4) rerun
-# をその場で実行して、更新漏れを無くします。
+# をその場で実行して更新漏れを防止。
 # サイドバーは initial_sidebar_state="expanded" で常時展開。
-# 診断はメイン側のエクスパンダに配置（必要時のみ使用）。
+# 診断はメイン側エクスパンダ（必要時のみ）。
+# コミットメッセージに [user:◯◯] を付与（サイドバー or Secrets）。
 # ------------------------------------------------------------
 
 import streamlit as st
@@ -31,6 +32,10 @@ def now_jst() -> datetime:
 
 def today_jst():
     return now_jst().date()
+
+# JST の「いま」を Pandas Timestamp で返す（更新日に使用）
+def jst_now_ts() -> pd.Timestamp:
+    return pd.Timestamp(now_jst())
 
 # ===== CSV設定 =====
 CSV_PATH = "tasks.csv"
@@ -74,17 +79,31 @@ def load_tasks() -> pd.DataFrame:
     return _normalize_df(df)
 
 def save_tasks_locally(df: pd.DataFrame):
-    """CSV へ保存（日付は ISO 文字列）"""
+    """CSV へ保存（日付は ISO 文字列・日付のみ）"""
     df_out = df.copy()
     for col in ["起票日", "更新日"]:
         df_out[col] = pd.to_datetime(df_out[col], errors="coerce").dt.strftime("%Y-%m-%d")
     df_out.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
 
-# ===== GitHubへコミット保存（診断＋競合検知付き） =====
-def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
+# ===== サイドバー：コミットメッセージに入れる名前 =====
+st.sidebar.subheader("コミット設定")
+commit_user_in = st.sidebar.text_input(
+    "コミットに入れる名前（例：都筑）",
+    value=st.session_state.get("commit_user", st.secrets.get("COMMIT_USER", "")),
+)
+st.session_state["commit_user"] = commit_user_in.strip()
+
+def get_commit_user() -> str:
+    """優先順：サイドバー入力 > Secrets(COMMIT_USER) > 空文字"""
+    return (st.session_state.get("commit_user") or st.secrets.get("COMMIT_USER", "")).strip()
+
+# ===== GitHubへコミット保存（診断＋競合検知付き、名前入り） =====
+def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False, commit_user: str = "", action: str = "Update") -> int:
     """
     ローカルCSVを GitHub の指定パスへコミット保存。
     - 直前 GET の sha をPUT payloadに含めて競合検知（他ユーザー更新 → 422）
+    - コミットメッセージ先頭に [user:◯◯] を付与（commit_user）
+    - action は "Add"/"Edit"/"Delete"/"Close" などを渡すと監査性が上がる
     - 成功: 200/201 を返す。失敗はステータスコード（-1 はSecrets不足）
     """
     # Secrets チェック
@@ -120,10 +139,17 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
             content_b64 = base64.b64encode(f.read()).decode("utf-8")
         ts = now_jst().strftime("%Y-%m-%d %H:%M:%S %Z")
 
+        # メッセージ作成（名前＋操作種類）
+        prefix = f"[user:{commit_user}] " if commit_user else ""
+        message = f"{prefix}{action} tasks.csv from Streamlit app ({ts})"
+
         payload = {
-            "message": f"Update tasks.csv from Streamlit app ({ts})",
+            "message": message,
             "content": content_b64,
             "branch": branch,
+            # 任意：author/committer を指定したい場合は下記を有効化（環境により無視されることあり）
+            # "author":   {"name": commit_user or "TaskBoard", "email": "noreply@example.com"},
+            # "committer":{"name": commit_user or "TaskBoard", "email": "noreply@example.com"},
         }
         if sha:
             payload["sha"] = sha  # 既存更新時は必須（競合検知にも使う）
@@ -155,18 +181,19 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
         return -1
 
 # ===== 保存＆確認を 1ヶ所に統一（直保存ヘルパー） =====
-def save_then_confirm_commit(df: pd.DataFrame, *, show_toast: bool = True) -> bool:
+def save_then_confirm_commit(df: pd.DataFrame, *, show_toast: bool = True, action: str = "Update") -> bool:
     """
     1) ローカルCSVへ保存
-    2) GitHubへコミット
+    2) GitHubへコミット（コミット名・操作種類付き）
     3) 成功(200/201)ならキャッシュクリア
     """
     try:
         # ローカルへ
         save_tasks_locally(df)
 
-        # GitHubへ
-        status = save_to_github_csv(debug=False)
+        # GitHubへ（コミット名付き）
+        commit_user = get_commit_user()
+        status = save_to_github_csv(debug=False, commit_user=commit_user, action=action)
 
         if status in (200, 201):
             if show_toast:
@@ -254,8 +281,9 @@ else:
     )
     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
-        df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(now_jst())
-        ok = save_then_confirm_commit(df)
+        # 自動起票（いま）
+        df.loc[df["ID"].isin(to_close_ids), "更新日"] = jst_now_ts()
+        ok = save_then_confirm_commit(df, action=f"Close {len(to_close_ids)} items")
         if ok:
             st.success(f"{len(to_close_ids)}件をクローズに更新しました。（GitHubへ保存完了）")
         st.rerun()
@@ -265,7 +293,6 @@ st.subheader("新規タスク追加（保存は自動）")
 with st.form("add"):
     c1, c2, c3 = st.columns(3)
     created = c1.date_input("起票日", today_jst())
-    updated = c2.date_input("更新日", today_jst())
     status_sel_add = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
     task = st.text_input("タスク（件名）")
     ass_choices = sorted(set(df["更新者"].tolist() + ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"]))
@@ -278,7 +305,7 @@ with st.form("add"):
         new_row = {
             "ID": str(uuid.uuid4()),
             "起票日": pd.Timestamp(created),
-            "更新日": pd.Timestamp(updated),
+            "更新日": jst_now_ts(),  # 追加時も「いま」を起票
             "タスク": task,
             "対応状況": status_sel_add,
             "更新者": assignee,
@@ -287,7 +314,8 @@ with st.form("add"):
             "ソース": source,
         }
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        ok = save_then_confirm_commit(df)
+        short_title = (task or "").strip()[:60]
+        ok = save_then_confirm_commit(df, action=f"Add: {short_title}")
         if ok:
             st.success("追加しました。（GitHubへ保存完了）")
         st.rerun()
@@ -344,17 +372,20 @@ else:
         df.loc[df["ID"] == choice_id, ["タスク","対応状況","更新者","次アクション","備考","ソース"]] = [
             task_e, status_e, assignee_e, next_action_e, notes_e, source_e
         ]
-        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(now_jst())
+        # 更新日は自動起票（いま）
+        df.loc[df["ID"] == choice_id, "更新日"] = jst_now_ts()
 
-        ok = save_then_confirm_commit(df)
+        short_title = str(task_e).strip()[:60]
+        ok = save_then_confirm_commit(df, action=f"Edit: {short_title}")
         if ok:
-            st.success("タスクを更新しました。（GitHubへ保存完了）")
+            st.success("タスクを更新しました。（更新日は自動／GitHubへ保存完了）")
         st.rerun()
 
     elif delete_btn:
         if confirm_word.strip().upper() == "DELETE":
             df = df[~df["ID"].eq(choice_id)].copy()
-            ok = save_then_confirm_commit(df)
+            short_title = str(df_by_id.loc[choice_id, "タスク"]).strip()[:60] if choice_id in df_by_id.index else ""
+            ok = save_then_confirm_commit(df, action=f"Delete: {short_title}")
             if ok:
                 st.success("タスクを削除しました。（GitHubへ保存完了）")
             st.session_state.pop("selected_id", None)
@@ -373,7 +404,7 @@ confirm_word_bulk = st.text_input("確認ワード（DELETE と入力）", value
 if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
     if confirm_word_bulk.strip().upper() == "DELETE":
         df = df[~df["ID"].isin(del_targets)].copy()
-        ok = save_then_confirm_commit(df)
+        ok = save_then_confirm_commit(df, action=f"Delete {len(del_targets)} items")
         if ok:
             st.success(f"{len(del_targets)}件のタスクを削除しました。（GitHubへ保存完了）")
         st.rerun()
@@ -389,11 +420,16 @@ with st.expander("GitHub保存の診断（必要なときだけ開く）", expan
     manual_backup = c2.button("手動バックアップ（最新CSVをコミット）")
 
     if run_getput:
-        save_to_github_csv(debug=True)
+        # 名前・操作種類が付いたメッセージで PUT される（debug=True）
+        _ = save_to_github_csv(
+            debug=True,
+            commit_user=get_commit_user(),
+            action="Diagnose"
+        )
 
     if manual_backup:
         # 現在の CSV を GitHub へコミット（保険用）
-        ok = save_then_confirm_commit(df, show_toast=False)
+        ok = save_then_confirm_commit(df, show_toast=False, action="Manual backup")
         if ok:
             st.success("バックアップ完了（GitHubへ保存しました）。")
 
