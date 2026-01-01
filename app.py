@@ -1,436 +1,505 @@
-diff --git a/app.py b/app.py
-index 1111111..2222222 100644
---- a/app.py
-+++ b/app.py
-@@ -1,17 +1,20 @@
- -*- coding: utf-8 -*-
- import streamlit as st
- import pandas as pd
- from datetime import datetime, date
- import uuid
- from zoneinfo import ZoneInfo
-+import os
-+import tempfile
-+import time
- 
- # --- GitHub API 用 ---
- import base64
- import requests
- 
- # ===== タイムゾーン・ヘルパー =====
- JST = ZoneInfo("Asia/Tokyo")
- 
--# SecretsのSAVE_WITH_TIMEを安全にパース（"true"/"false"などの文字列にも対応）
--def _parse_bool(v, default=True):
-+# SecretsのSAVE_WITH_TIMEを安全にパース（"true"/"false"などの文字列にも対応）
-+def _parse_bool(v, default=True):
-     if isinstance(v, bool):
-         return v
-     if isinstance(v, str):
-         return v.strip().lower() in {"1", "true", "t", "yes", "on"}
-     return default
- 
- SAVE_WITH_TIME = _parse_bool(st.secrets.get("SAVE_WITH_TIME", True))  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
- 
--def now_jst() -&gt; datetime:
-+def now_jst() -> datetime:
-     return datetime.now(JST)
- 
--def now_jst_str() -&gt; str:
-+def now_jst_str() -> str:
-     fmt = "%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d"
-     return now_jst().strftime(fmt)
- 
--def today_jst() -&gt; date:
-+def today_jst() -> date:
-     return now_jst().date()
- 
- # ===== ページ設定 =====
- st.set_page_config(page_title="タスク管理ボード（完全版）", layout="wide")
- st.title("タスク管理ボード（完全版 / 起票日は自動・編集不可、更新者はプルダウン）")
- 
- CSV_PATH = st.secrets.get("CSV_PATH", "tasks.csv")
- MANDATORY_COLS = [
-     "ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース",
- ]
- 
- # ▼ クエリパラメータ(edit)を取り込んで選択IDに反映
--def _get_query_params():
-+def _get_query_params():
-     # Streamlit 1.30+ : st.query_params
-     try:
-         return dict(st.query_params)
-     except Exception:
-         # 旧版のフォールバック
-         return {k: (v[0] if isinstance(v, list) and v else v) for k, v in st.experimental_get_query_params().items()}
- 
--def _clear_query_params():
-+def _clear_query_params():
-     try:
-         st.query_params.clear()
-     except Exception:
-         # 旧版は空で上書き
-         st.experimental_set_query_params()
- 
- qp = _get_query_params()
- edit_param = qp.get("edit")
- if edit_param:
-     # 一度だけ反映（無限ループ防止）
-     if "selected_id" not in st.session_state or st.session_state.get("selected_id") != edit_param:
-         st.session_state["selected_id"] = edit_param
- 
- # ===== ユーティリティ =====
- MISSING_SET = {"", "none", "null", "nan", "na", "n/a", "-", "—"}
- 
--def _ensure_str(x) -&gt; str:
-+def _ensure_str(x) -> str:
-     return "" if x is None else str(x)
- 
--def _is_missing(x) -&gt; bool:
-+def _is_missing(x) -> bool:
-     s = _ensure_str(x).strip().lower()
-     return s in MISSING_SET
- 
--def _normalize_df(df: pd.DataFrame) -&gt; pd.DataFrame:
-+def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-     # 列名の単純正規化（全角スペース→半角、前後空白除去）
-     df.columns = [c.replace("\u3000", " ").strip() for c in df.columns]
-     # よくある別名の統一
-     rename_map = {
-         "更新": "更新日", "最終更新": "更新日", "起票": "起票日", "作成日": "起票日",
-         "担当": "更新者", "担当者": "更新者"
-     }
-     df.columns = [rename_map.get(c, c) for c in df.columns]
-@@ -69,7 +72,7 @@ def _normalize_df(df: pd.DataFrame) -&gt; pd.DataFrame:
-     return df.reset_index(drop=True)
- 
- @st.cache_data(ttl=30)
--def load_tasks() -&gt; pd.DataFrame:
-+def load_tasks() -> pd.DataFrame:
-     try:
-         df = pd.read_csv(CSV_PATH, encoding="utf-8-sig", dtype=str, keep_default_na=False)
-     except FileNotFoundError:
-         df = pd.DataFrame(columns=MANDATORY_COLS)
-     df = _normalize_df(df)
-     # 読み込み直後に安全弁（欠損日付は“いま”で補完）
-     df = safety_autofill_all(df)
-@@ -77,21 +80,38 @@ def load_tasks() -&gt; pd.DataFrame:
- 
--def _format_date_for_save(dt: pd.Timestamp) -&gt; str:
-+def _format_date_for_save(dt: pd.Timestamp) -> str:
-     if pd.isna(dt):
-         return now_jst_str()  # 欠損は“いま”
-     if SAVE_WITH_TIME:
-         return pd.to_datetime(dt).strftime("%Y-%m-%d %H:%M:%S")
-     else:
-         return pd.to_datetime(dt).strftime("%Y-%m-%d")
- 
--def save_tasks(df: pd.DataFrame):
--    """保存前に安全弁をかけ、CSVへ書き出し"""
--    df_out = safety_autofill_all(df.copy())
--    for col in ["起票日", "更新日"]:
--        df_out[col] = df_out[col].apply(lambda x: _format_date_for_save(pd.to_datetime(x, errors="coerce")))
--    df_out.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
-+def save_tasks(df: pd.DataFrame):
-+    """保存前に安全弁をかけ、CSVへ書き出し（アトミック保存）"""
-+    df_out = safety_autofill_all(df.copy())
-+    for col in ["起票日", "更新日"]:
-+        df_out[col] = df_out[col].apply(lambda x: _format_date_for_save(pd.to_datetime(x, errors="coerce")))
-+    # 一時ファイルに書いてから置換（アトミック）
-+    dir_name = os.path.dirname(CSV_PATH) or "."
-+    with tempfile.NamedTemporaryFile(mode="w", delete=False, dir=dir_name, suffix=".tmp", encoding="utf-8-sig") as tmp:
-+        df_out.to_csv(tmp.name, index=False, encoding="utf-8-sig")
-+        tmp_path = tmp.name
-+    os.replace(tmp_path, CSV_PATH)
- 
- # ===== 日付の安全弁（全行） =====
--def safety_autofill_all(df: pd.DataFrame) -&gt; pd.DataFrame:
-+def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
-     now_ts = pd.Timestamp(now_jst())
-     # 起票日は欠損のみ補完（既存起票日は維持）
-     df["起票日"] = df["起票日"].apply(lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce"))
-     # 更新日は欠損なら補完（編集/クローズ時は別途上書き）
-     df["更新日"] = df["更新日"].apply(lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce"))
-     return df
- 
- # ===== GitHubへコミット保存（診断付き） =====
--def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
-+def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False, max_retry: int = 1):
-     required_keys = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PATH"]
-     missing = [k for k in required_keys if k not in st.secrets]
-     branch = st.secrets.get("GITHUB_BRANCH", "main")
-     if missing:
-         st.error(f"Secrets が不足しています: {missing}（Manage app → Settings → Secrets を確認）")
-         return
-@@ -104,47 +124,78 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
-     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-     headers = {
-         "Authorization": f"token {token}",
-         "Accept": "application/vnd.github+json",
-         "X-GitHub-Api-Version": "2022-11-28",
-         "User-Agent": "streamlit-app",
-     }
- 
--    try:
--        r = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
--        if debug:
--            st.write({"GET_status": r.status_code, "GET_text": r.text[:300]})
--        sha = r.json().get("sha") if r.status_code == 200 else None
--
--        with open(local_path, "rb") as f:
--            content_b64 = base64.b64encode(f.read()).decode("utf-8")
--
--        ts = now_jst().strftime("%Y-%m-%d %H:%M:%S %Z")
--        payload = {
--            "message": f"Update tasks.csv from Streamlit app ({ts})",
--            "content": content_b64,
--            "branch": branch,
--        }
--        if sha:
--            payload["sha"] = sha
--
--        put = requests.put(url, headers=headers, json=payload, timeout=20)
--        if debug:
--            st.write({"PUT_status": put.status_code, "PUT_text": put.text[:500]})
--
--        if put.status_code in (200, 201):
--            st.toast("GitHubへ保存完了", icon="✅")
--        elif put.status_code == 401:
--            st.error("401 Unauthorized: トークン無効。新しいPATをSecretsへ。")
--        elif put.status_code == 403:
--            st.error("403 Forbidden: 権限不足/保護ルール。PAT権限『Contents: Read and write』やブランチ保護を確認。")
--        elif put.status_code == 404:
--            st.error("404 Not Found: OWNER/REPO/PATH/BRANCH を再確認。")
--        elif put.status_code == 422:
--            st.error("422 Unprocessable: SHA不正 or ブランチ保護。最新を取得して再保存してください。")
--        else:
--            st.error(f"GitHub保存失敗: {put.status_code} {put.text[:300]}")
--    except Exception as e:
--        st.error(f"GitHub保存中に例外: {e}")
-+    def _get_sha():
-+        r = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
-+        if debug:
-+            st.write({"GET_status": r.status_code, "GET_text": r.text[:300], "rate": {
-+                "limit": r.headers.get("X-RateLimit-Limit"),
-+                "remaining": r.headers.get("X-RateLimit-Remaining"),
-+                "reset": r.headers.get("X-RateLimit-Reset"),
-+            }})
-+        return r.json().get("sha") if r.status_code == 200 else None, r
-+
-+    def _put(sha):
-+        with open(local_path, "rb") as f:
-+            content_b64 = base64.b64encode(f.read()).decode("utf-8")
-+        ts = now_jst().strftime("%Y-%m-%d %H:%M:%S %Z")
-+        payload = {
-+            "message": f"Update tasks.csv from Streamlit app ({ts})",
-+            "content": content_b64,
-+            "branch": branch,
-+        }
-+        if sha:
-+            payload["sha"] = sha
-+        put = requests.put(url, headers=headers, json=payload, timeout=20)
-+        if debug:
-+            st.write({"PUT_status": put.status_code, "PUT_text": put.text[:500]})
-+        return put
-+
-+    try:
-+        sha, r0 = _get_sha()
-+        put = _put(sha)
-+
-+        if put.status_code in (200, 201):
-+            st.toast("GitHubへ保存完了", icon="✅")
-+            return
-+
-+        # 409/422 → 競合・sha不一致。1回だけ再取得して再PUT。
-+        if put.status_code in (409, 422) and max_retry > 0:
-+            time.sleep(0.6)
-+            sha, _ = _get_sha()
-+            put2 = _put(sha)
-+            if put2.status_code in (200, 201):
-+                st.toast("GitHubへ保存完了（再試行で成功）", icon="✅")
-+                return
-+            else:
-+                st.error(f"GitHub保存失敗（再試行後）: {put2.status_code} {put2.text[:300]}")
-+                return
-+
-+        if put.status_code == 401:
-+            st.error("401 Unauthorized: トークン無効。新しいPATをSecretsへ。")
-+        elif put.status_code == 403:
-+            st.error("403 Forbidden: 権限不足/保護ルール。PAT権限『Contents: Read and write』やブランチ保護を確認。")
-+        elif put.status_code == 404:
-+            st.error("404 Not Found: OWNER/REPO/PATH/BRANCH を再確認。")
-+        else:
-+            st.error(f"GitHub保存失敗: {put.status_code} {put.text[:300]}")
-+    except Exception as e:
-+        st.error(f"GitHub保存中に例外: {e}")
- 
- # ===== データ読み込み =====
- df = load_tasks()
- df_by_id = df.set_index("ID")
- 
- # ===== サイドバー・フィルター =====
- st.sidebar.header("フィルター")
-@@ -174,9 +225,9 @@ for k in ["返信待ち", "返信無し", "返信なし", "返信ない", "催促"]:
- reply_count = int(df[reply_mask].shape[0])
- 
- col1, col2, col3, col4 = st.columns(4)
- col1.metric("総タスク数", total)
- col2.metric("対応中", int(status_counts.get("対応中", 0)))
- col3.metric("クローズ", int(status_counts.get("クローズ", 0)))
- col4.metric("返信待ち系", reply_count)
- 
- # ===== 一覧 =====
- st.subheader("一覧")
- 
--def _fmt_display(dt: pd.Timestamp) -&gt; str:
-+def _fmt_display(dt: pd.Timestamp) -> str:
-     if pd.isna(dt):
-         return "-"
-     return dt.strftime("%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d")
- 
- disp = view_df.copy()
- disp["起票日"] = disp["起票日"].apply(_fmt_display)
-@@ -188,12 +239,12 @@ disp["更新日"] = disp["更新日"].apply(_fmt_display)
- # ▼ タスク列をクリック可能に（サブパスでも壊れないよう '?edit=&lt;ID&gt;'）＋右端「編集」列
--disp["編集"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
-+disp["編集"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
- 
- link_column_supported = hasattr(st.column_config, "LinkColumn")
- col_config = {
-     "編集": st.column_config.LinkColumn("編集", help="編集画面を開く", width="small")
- }
- if link_column_supported:
-     # 「タスク」をリンク表示（環境により見た目がURLになる場合は右端「編集」を利用）
--    disp["_task_link"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
-+    disp["_task_link"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
-     try:
-         col_config["タスク"] = st.column_config.LinkColumn("タスク", help="クリックで編集へ")
-         disp["タスク"] = disp["_task_link"]
-@@ -207,30 +258,34 @@ st.dataframe(
- )
- 
- # ===== クローズ候補（.dtエラー対策版） =====
- st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
- threshold_date = today_jst() - pd.Timedelta(days=7)         # date型の閾値
- threshold_dt = pd.Timestamp(threshold_date)                  # datetimeへ統一
- 
--in_progress = df[df["対応状況"].str.contains("対応中", na=False)]
--reply_df = df[reply_mask]
--closing_candidates = in_progress[in_progress.index.isin(reply_df.index)]
--
--closing_candidates = closing_candidates.copy()
--closing_candidates["更新日"] = pd.to_datetime(closing_candidates["更新日"], errors="coerce")
--closing_candidates = closing_candidates[
--    closing_candidates["更新日"].notna() &amp; (closing_candidates["更新日"] &lt; threshold_dt)
--]
-+# マスク合成で明快に
-+in_progress_mask = df["対応状況"].str.contains("対応中", na=False)
-+cand_mask = in_progress_mask & reply_mask
-+closing_candidates = df[cand_mask].copy()
-+closing_candidates["更新日"] = pd.to_datetime(closing_candidates["更新日"], errors="coerce")
-+closing_candidates = closing_candidates[
-+    closing_candidates["更新日"].notna() & (closing_candidates["更新日"] < threshold_dt)
-+]
- 
- if closing_candidates.empty:
-     st.info("該当なし")
- else:
-     show = closing_candidates.copy()
-     show["起票日"] = show["起票日"].apply(_fmt_display)
-     show["更新日"] = show["更新日"].apply(_fmt_display)
-     st.dataframe(show.sort_values("更新日"), use_container_width=True)
- 
-     to_close_ids = st.multiselect(
-         "クローズするタスク（複数選択可）",
-         closing_candidates["ID"].tolist(),
-         format_func=lambda _id: f'{df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}'
-     )
-     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
-         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
-         df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(now_jst())  # “いま”
-         save_tasks(df)
-         save_to_github_csv(debug=False)
-         st.success(f"{len(to_close_ids)}件をクローズに更新しました。")
-         st.cache_data.clear()
-         _clear_query_params()
-         st.rerun()
-@@ -244,7 +299,7 @@ st.subheader("新規タスク追加（起票日/更新日は自動でJSTの“いま”）")
- with st.form("add"):
-     c1, c2, c3 = st.columns(3)
-     c1.markdown(f"起票日: **{now_jst_str()}**")
-     c2.markdown(f"更新日: **{now_jst_str()}**")
-     status = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
- 
-     task = st.text_input("タスク（件名）")
-     fixed_assignees = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])  # 任意固定
-@@ -256,20 +311,28 @@ with st.form("add"):
-     notes = st.text_area("備考")
-     source = st.text_input("ソース（ID/リンクなど）")
- 
-     submitted = st.form_submit_button("追加", type="primary")
-     if submitted:
--        now_ts = pd.Timestamp(now_jst())
--        new_row = {
--            "ID": str(uuid.uuid4()),
--            "起票日": now_ts,
--            "更新日": now_ts,
--            "タスク": task,
--            "対応状況": status,
--            "更新者": assignee,
--            "次アクション": next_action,
--            "備考": notes,
--            "ソース": source,
--        }
--        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
--        save_tasks(df)
--        save_to_github_csv(debug=False)
--        st.success("追加しました（起票・更新はJSTの“いま”）。")
--        st.cache_data.clear()
--        _clear_query_params()
--        st.rerun()
-+        # 必須バリデーション：件名は空不可
-+        if not task.strip():
-+            st.error("『タスク（件名）』は必須です。")
-+        else:
-+            now_ts = pd.Timestamp(now_jst())
-+            new_row = {
-+                "ID": str(uuid.uuid4()),
-+                "起票日": now_ts,
-+                "更新日": now_ts,
-+                "タスク": task.strip(),
-+                "対応状況": status,
-+                "更新者": assignee,
-+                "次アクション": next_action,
-+                "備考": notes,
-+                "ソース": source,
-+            }
-+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-+            save_tasks(df)
-+            save_to_github_csv(debug=False)
-+            st.success("追加しました（起票・更新はJSTの“いま”）。")
-+            st.cache_data.clear()
-+            _clear_query_params()
-+            st.rerun()
- 
- # ===== 編集・削除 =====
- st.subheader("タスク編集・削除（1件を選んで安全に更新／削除）")
-@@ -282,7 +345,7 @@ else:
-     # ▼ クエリ or セッションの選択を優先して初期選択
-     preselect_id = st.session_state.get("selected_id")
-     options_ids = df_by_id.index.tolist()
-     default_index = options_ids.index(preselect_id) if (preselect_id in options_ids) else 0
- 
--    choice_id = st.selectbox(
-+    choice_id = st.selectbox(
-         "編集対象",
-         options=options_ids,
-         index=default_index,
-         format_func=lambda _id: f'[{df_by_id.loc[_id,"対応状況"]}] {df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}',
-         key="selected_id",
-@@ -352,7 +415,7 @@ if colB.button("GitHub保存の診断"):
-     save_to_github_csv(debug=True)
- 
- st.sidebar.caption(f"Secrets keys: {list(st.secrets.keys())}")
- 
- # ===== フッター =====
- st.caption("※ 起票日は新規作成時のみ自動セットし、以後は編集不可（既存値維持）。更新日は編集/クローズ操作でJSTの“いま”に自動更新。GitHub連携はGET→PUTで保存します。")
+
+# -*- coding: utf-8 -*-
+import streamlit as st
+import pandas as pd
+from datetime import datetime, date
+import uuid
+from zoneinfo import ZoneInfo
+import os
+import tempfile
+import time
+
+# --- GitHub API 用 ---
+import base64
+import requests
+
+# ===== タイムゾーン・ヘルパー =====
+JST = ZoneInfo("Asia/Tokyo")
+
+# SecretsのSAVE_WITH_TIMEを安全にパース（"true"/"false"などの文字列にも対応）
+def _parse_bool(v, default=True):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "t", "yes", "on"}
+    return default
+
+SAVE_WITH_TIME = _parse_bool(st.secrets.get("SAVE_WITH_TIME", True))  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
+
+def now_jst() -> datetime:
+    return datetime.now(JST)
+
+def now_jst_str() -> str:
+    fmt = "%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d"
+    return now_jst().strftime(fmt)
+
+def today_jst() -> date:
+    return now_jst().date()
+
+# ===== ページ設定 =====
+st.set_page_config(page_title="タスク管理ボード（完全版）", layout="wide")
+st.title("タスク管理ボード（完全版 / 起票日は自動・編集不可、更新者はプルダウン）")
+
+CSV_PATH = st.secrets.get("CSV_PATH", "tasks.csv")
+MANDATORY_COLS = [
+    "ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース",
+]
+
+# ▼ クエリパラメータ(edit)を取り込んで選択IDに反映
+def _get_query_params():
+    # Streamlit 1.30+ : st.query_params
+    try:
+        return dict(st.query_params)
+    except Exception:
+        # 旧版のフォールバック
+        return {k: (v[0] if isinstance(v, list) and v else v) for k, v in st.experimental_get_query_params().items()}
+
+def _clear_query_params():
+    try:
+        st.query_params.clear()
+    except Exception:
+        # 旧版は空で上書き
+        st.experimental_set_query_params()
+
+qp = _get_query_params()
+edit_param = qp.get("edit")
+if edit_param:
+    # 一度だけ反映（無限ループ防止）
+    if "selected_id" not in st.session_state or st.session_state.get("selected_id") != edit_param:
+        st.session_state["selected_id"] = edit_param
+
+# ===== ユーティリティ =====
+MISSING_SET = {"", "none", "null", "nan", "na", "n/a", "-", "—"}
+
+def _ensure_str(x) -> str:
+    return "" if x is None else str(x)
+
+def _is_missing(x) -> bool:
+    s = _ensure_str(x).strip().lower()
+    return s in MISSING_SET
+
+def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    # 列名の単純正規化（全角スペース→半角、前後空白除去）
+    df.columns = [c.replace("\u3000", " ").strip() for c in df.columns]
+    # よくある別名の統一
+    rename_map = {
+        "更新": "更新日", "最終更新": "更新日", "起票": "起票日", "作成日": "起票日",
+        "担当": "更新者", "担当者": "更新者"
+    }
+    df.columns = [rename_map.get(c, c) for c in df.columns]
+
+    # 必須列の追加
+    for col in MANDATORY_COLS:
+        if col not in df.columns:
+            df[col] = ""
+
+    # ID 正規化（空/重複を必ず解消）
+    df["ID"] = df["ID"].astype(str).replace({"nan": "", "None": ""})
+    mask_empty = df["ID"].str.strip().eq("")
+    if mask_empty.any():
+        df.loc[mask_empty, "ID"] = [str(uuid.uuid4()) for _ in range(mask_empty.sum())]
+    dup_mask = df["ID"].duplicated(keep="first")
+    if dup_mask.any():
+        df.loc[dup_mask, "ID"] = [str(uuid.uuid4()) for _ in range(dup_mask.sum())]
+
+    # 文字列列の正規化（None/null/nanなどを空へ）
+    str_cols = ["タスク", "対応状況", "更新者", "次アクション", "備考", "ソース"]
+    for col in str_cols:
+        df[col] = df[col].apply(lambda x: "" if _is_missing(x) else _ensure_str(x))
+
+    # 日付列（NaTを許容）
+    for col in ["起票日", "更新日"]:
+        df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    return df.reset_index(drop=True)
+
+@st.cache_data(ttl=30)
+def load_tasks() -> pd.DataFrame:
+    try:
+        df = pd.read_csv(CSV_PATH, encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    except FileNotFoundError:
+        df = pd.DataFrame(columns=MANDATORY_COLS)
+    df = _normalize_df(df)
+    # 読み込み直後に安全弁（欠損日付は“いま”で補完）
+    df = safety_autofill_all(df)
+    return df
+
+def _format_date_for_save(dt: pd.Timestamp) -> str:
+    if pd.isna(dt):
+        return now_jst_str()  # 欠損は“いま”
+    if SAVE_WITH_TIME:
+        return pd.to_datetime(dt).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        return pd.to_datetime(dt).strftime("%Y-%m-%d")
+
+def save_tasks(df: pd.DataFrame):
+    """保存前に安全弁をかけ、CSVへ書き出し（アトミック保存）"""
+    df_out = safety_autofill_all(df.copy())
+    for col in ["起票日", "更新日"]:
+        df_out[col] = df_out[col].apply(lambda x: _format_date_for_save(pd.to_datetime(x, errors="coerce")))
+    # 一時ファイルに書いてから置換（アトミック）
+    dir_name = os.path.dirname(CSV_PATH) or "."
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, dir=dir_name, suffix=".tmp", encoding="utf-8-sig") as tmp:
+        df_out.to_csv(tmp.name, index=False, encoding="utf-8-sig")
+        tmp_path = tmp.name
+    os.replace(tmp_path, CSV_PATH)
+
+# ===== 日付の安全弁（全行） =====
+def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
+    now_ts = pd.Timestamp(now_jst())
+    # 起票日は欠損のみ補完（既存起票日は維持）
+    df["起票日"] = df["起票日"].apply(lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce"))
+    # 更新日は欠損なら補完（編集/クローズ時は別途上書き）
+    df["更新日"] = df["更新日"].apply(lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce"))
+    return df
+
+# ===== GitHubへコミット保存（診断付き） =====
+def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False, max_retry: int = 1):
+    required_keys = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PATH"]
+    missing = [k for k in required_keys if k not in st.secrets]
+    branch = st.secrets.get("GITHUB_BRANCH", "main")
+    if missing:
+        st.error(f"Secrets が不足しています: {missing}（Manage app → Settings → Secrets を確認）")
+        return
+
+    token = st.secrets["GITHUB_TOKEN"]
+    owner = st.secrets["GITHUB_OWNER"]
+    repo  = st.secrets["GITHUB_REPO"]
+    path  = st.secrets["GITHUB_PATH"]
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "streamlit-app",
+    }
+
+    def _get_sha():
+        r = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
+        if debug:
+            st.write({"GET_status": r.status_code, "GET_text": r.text[:300], "rate": {
+                "limit": r.headers.get("X-RateLimit-Limit"),
+                "remaining": r.headers.get("X-RateLimit-Remaining"),
+                "reset": r.headers.get("X-RateLimit-Reset"),
+            }})
+        return r.json().get("sha") if r.status_code == 200 else None, r
+
+    def _put(sha):
+        with open(local_path, "rb") as f:
+            content_b64 = base64.b64encode(f.read()).decode("utf-8")
+        ts = now_jst().strftime("%Y-%m-%d %H:%M:%S %Z")
+        payload = {
+            "message": f"Update tasks.csv from Streamlit app ({ts})",
+            "content": content_b64,
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+        put = requests.put(url, headers=headers, json=payload, timeout=20)
+        if debug:
+            st.write({"PUT_status": put.status_code, "PUT_text": put.text[:500]})
+        return put
+
+    try:
+        sha, _ = _get_sha()
+        put = _put(sha)
+
+        if put.status_code in (200, 201):
+            st.toast("GitHubへ保存完了", icon="✅")
+            return
+
+        # 409/422 → 競合・sha不一致。1回だけ再取得して再PUT。
+        if put.status_code in (409, 422) and max_retry > 0:
+            time.sleep(0.6)
+            sha, _ = _get_sha()
+            put2 = _put(sha)
+            if put2.status_code in (200, 201):
+                st.toast("GitHubへ保存完了（再試行で成功）", icon="✅")
+                return
+            else:
+                st.error(f"GitHub保存失敗（再試行後）: {put2.status_code} {put2.text[:300]}")
+                return
+
+        if put.status_code == 401:
+            st.error("401 Unauthorized: トークン無効。新しいPATをSecretsへ。")
+        elif put.status_code == 403:
+            st.error("403 Forbidden: 権限不足/保護ルール。PAT権限『Contents: Read and write』やブランチ保護を確認。")
+        elif put.status_code == 404:
+            st.error("404 Not Found: OWNER/REPO/PATH/BRANCH を再確認。")
+        else:
+            st.error(f"GitHub保存失敗: {put.status_code} {put.text[:300]}")
+    except Exception as e:
+        st.error(f"GitHub保存中に例外: {e}")
+
+# ===== データ読み込み =====
+df = load_tasks()
+df_by_id = df.set_index("ID")
+
+# ===== サイドバー・フィルター =====
+st.sidebar.header("フィルター")
+status_options = ["すべて"] + sorted([s for s in df["対応状況"].dropna().unique().tolist() if s.strip() != ""])
+status_sel = st.sidebar.selectbox("対応状況", status_options)
+assignees = sorted([a for a in df["更新者"].dropna().unique().tolist() if a.strip() != ""])
+assignee_sel = st.sidebar.multiselect("担当者", assignees)
+kw = st.sidebar.text_input("キーワード（タスク/備考/次アクション）")
+
+view_df = df.copy()
+if status_sel != "すべて":
+    view_df = view_df[view_df["対応状況"] == status_sel]
+if assignee_sel:
+    view_df = view_df[view_df["更新者"].isin(assignee_sel)]
+if kw:
+    mask = (
+        view_df["タスク"].str.contains(kw, na=False)
+        | view_df["備考"].str.contains(kw, na=False)
+        | view_df["次アクション"].str.contains(kw, na=False)
+    )
+    view_df = view_df[mask]
+
+# ===== サマリー =====
+total = len(df)
+status_counts = df["対応状況"].value_counts()
+
+reply_mask = pd.Series(False, index=df.index)
+for k in ["返信待ち", "返信無し", "返信なし", "返信ない", "催促"]:
+    reply_mask = (
+        reply_mask
+        | df["次アクション"].str.contains(k, na=False)
+        | df["備考"].str.contains(k, na=False)
+    )
+reply_count = int(df[reply_mask].shape[0])
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("総タスク数", total)
+col2.metric("対応中", int(status_counts.get("対応中", 0)))
+col3.metric("クローズ", int(status_counts.get("クローズ", 0)))
+col4.metric("返信待ち系", reply_count)
+
+# ===== 一覧 =====
+st.subheader("一覧")
+
+def _fmt_display(dt: pd.Timestamp) -> str:
+    if pd.isna(dt):
+        return "-"
+    return dt.strftime("%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d")
+
+disp = view_df.copy()
+disp["起票日"] = disp["起票日"].apply(_fmt_display)
+disp["更新日"] = disp["更新日"].apply(_fmt_display)
+
+# ▼ タスク列をクリック可能に（サブパスでも壊れないよう '?edit=<ID>'）＋右端「編集」列
+disp["編集"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
+
+link_column_supported = hasattr(st.column_config, "LinkColumn")
+col_config = {
+    "編集": st.column_config.LinkColumn("編集", help="編集画面を開く", width="small")
+}
+if link_column_supported:
+    # 「タスク」をリンク表示（環境により見た目がURLになる場合は右端「編集」を利用）
+    disp["_task_link"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
+    try:
+        col_config["タスク"] = st.column_config.LinkColumn("タスク", help="クリックで編集へ")
+        disp["タスク"] = disp["_task_link"]
+    except Exception:
+        disp.drop(columns=["_task_link"], inplace=True, errors="ignore")
+
+st.dataframe(
+    disp.sort_values("更新日", ascending=False),
+    use_container_width=True,
+    column_config=col_config
+)
+
+# ===== クローズ候補 =====
+st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
+threshold_date = today_jst() - pd.Timedelta(days=7)         # date型の閾値
+threshold_dt = pd.Timestamp(threshold_date)                  # datetimeへ統一
+
+# マスク合成で明快に
+in_progress_mask = df["対応状況"].str.contains("対応中", na=False)
+cand_mask = in_progress_mask & reply_mask
+closing_candidates = df[cand_mask].copy()
+closing_candidates["更新日"] = pd.to_datetime(closing_candidates["更新日"], errors="coerce")
+closing_candidates = closing_candidates[
+    closing_candidates["更新日"].notna() & (closing_candidates["更新日"] < threshold_dt)
+]
+
+if closing_candidates.empty:
+    st.info("該当なし")
+else:
+    show = closing_candidates.copy()
+    show["起票日"] = show["起票日"].apply(_fmt_display)
+    show["更新日"] = show["更新日"].apply(_fmt_display)
+    st.dataframe(show.sort_values("更新日"), use_container_width=True)
+
+    to_close_ids = st.multiselect(
+        "クローズするタスク（複数選択可）",
+        closing_candidates["ID"].tolist(),
+        format_func=lambda _id: f'{df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}'
+    )
+    if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
+        df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
+        df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(now_jst())  # “いま”
+        save_tasks(df)
+        save_to_github_csv(debug=False)
+        st.success(f"{len(to_close_ids)}件をクローズに更新しました。")
+        st.cache_data.clear()
+        _clear_query_params()
+        st.rerun()
+
+# ===== 新規追加 =====
+st.subheader("新規タスク追加（起票日/更新日は自動でJSTの“いま”）")
+with st.form("add"):
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(f"起票日: **{now_jst_str()}**")
+    c2.markdown(f"更新日: **{now_jst_str()}**")
+    status = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
+
+    task = st.text_input("タスク（件名）")
+    fixed_assignees = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])  # 任意固定
+    ass_choices = sorted(set([a for a in df["更新者"].tolist() if a.strip() != ""] + list(fixed_assignees)))
+    assignee = st.selectbox("更新者（担当）", options=ass_choices)
+
+    next_action = st.text_area("次アクション")
+    notes = st.text_area("備考")
+    source = st.text_input("ソース（ID/リンクなど）")
+
+    submitted = st.form_submit_button("追加", type="primary")
+    if submitted:
+        # 必須バリデーション：件名は空不可
+        if not task.strip():
+            st.error("『タスク（件名）』は必須です。")
+        else:
+            now_ts = pd.Timestamp(now_jst())
+            new_row = {
+                "ID": str(uuid.uuid4()),
+                "起票日": now_ts,
+                "更新日": now_ts,
+                "タスク": task.strip(),
+                "対応状況": status,
+                "更新者": assignee,
+                "次アクション": next_action,
+                "備考": notes,
+                "ソース": source,
+            }
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            save_tasks(df)
+            save_to_github_csv(debug=False)
+            st.success("追加しました（起票・更新はJSTの“いま”）。")
+            st.cache_data.clear()
+            _clear_query_params()
+            st.rerun()
+
+# ===== 編集・削除 =====
+st.subheader("タスク編集・削除（1件を選んで安全に更新／削除）")
+
+if len(df) == 0:
+    st.info("編集対象のタスクがありません。まずは追加してください。")
+else:
+    # ▼ クエリ or セッションの選択を優先して初期選択
+    preselect_id = st.session_state.get("selected_id")
+    options_ids = df_by_id.index.tolist()
+    default_index = options_ids.index(preselect_id) if (preselect_id in options_ids) else 0
+
+    choice_id = st.selectbox(
+        "編集対象",
+        options=options_ids,
+        index=default_index,
+        format_func=lambda _id: f'[{df_by_id.loc[_id,"対応状況"]}] {df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}',
+        key="selected_id",
+    )
+
+    if choice_id not in df_by_id.index:
+        st.warning("選択したIDが見つかりません。再読み込みします。")
+        st.cache_data.clear()
+        _clear_query_params()
+        st.rerun()
+
+    with st.form(f"edit_task_{choice_id}"):
+        c1, c2, c3 = st.columns(3)
+        task_e = c1.text_input("タスク（件名）", df_by_id.loc[choice_id, "タスク"], key=f"task_{choice_id}")
+        status_e = c2.selectbox(
+            "対応状況", ["未対応", "対応中", "クローズ"],
+            index=( ["未対応","対応中","クローズ"].index(df_by_id.loc[choice_id,"対応状況"]) if df_by_id.loc[choice_id,"対応状況"] in ["未対応","対応中","クローズ"] else 1 ),
+            key=f"status_{choice_id}"
+        )
+
+        fixed_assignees_e = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])  # 任意固定
+        ass_choices_e = sorted(set([a for a in df["更新者"].tolist() if a.strip() != ""] + list(fixed_assignees_e)))
+        default_assignee = df_by_id.loc[choice_id, "更新者"]
+        ass_index = ass_choices_e.index(default_assignee) if default_assignee in ass_choices_e else 0
+        assignee_e = c3.selectbox("更新者（担当）", options=ass_choices_e, index=ass_index, key=f"assignee_{choice_id}")
+
+        next_action_e = st.text_area("次アクション", df_by_id.loc[choice_id, "次アクション"], key=f"next_{choice_id}")
+        notes_e = st.text_area("備考", df_by_id.loc[choice_id, "備考"], key=f"notes_{choice_id}")
+        source_e = st.text_input("ソース（ID/リンクなど）", df_by_id.loc[choice_id, "ソース"], key=f"source_{choice_id}")
+
+        st.caption(
+            f"起票日: {_fmt_display(df_by_id.loc[choice_id, '起票日'])} / 最終更新: {_fmt_display(df_by_id.loc[choice_id, '更新日'])}"
+        )
+
+        col_ok, col_spacer, col_del = st.columns([1, 1, 1])
+        submit_edit = col_ok.form_submit_button("更新する", type="primary")
+
+        st.markdown("##### 削除（危険）")
+        st.warning("この操作は元に戻せません。削除する場合、確認ワードに `DELETE` と入力してください。")
+        confirm_word = st.text_input("確認ワード（DELETE と入力）", value="", key=f"confirm_{choice_id}")
+        delete_btn = col_del.form_submit_button("このタスクを削除", type="secondary")
+
+    if submit_edit:
+        df.loc[df["ID"] == choice_id, ["タスク","対応状況","更新者","次アクション","備考","ソース"]] = [
+            task_e, status_e, assignee_e, next_action_e, notes_e, source_e
+        ]
+        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(now_jst())  # “いま”
+        save_tasks(df)
+        save_to_github_csv(debug=False)
+        st.success("タスクを更新しました（更新日はJSTの“いま”）。")
+        st.cache_data.clear()
+        _clear_query_params()
+        st.rerun()
+
+    elif delete_btn:
+        if confirm_word.strip().upper() == "DELETE":
+            df = df[~df["ID"].eq(choice_id)].copy()
+            save_tasks(df)
+            save_to_github_csv(debug=False)
+            st.session_state.pop("selected_id", None)
+            st.success("タスクを削除しました。")
+            st.cache_data.clear()
+            _clear_query_params()
+            st.rerun()
+        else:
+            st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
+
+# ===== 一括削除 =====
+st.subheader("一括削除（複数選択）")
+del_targets = st.multiselect(
+    "削除したいタスク（複数選択）",
+    options=view_df["ID"].tolist(),
+    format_func=lambda _id: f'{df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}'
+)
+confirm_word_bulk = st.text_input("確認ワード（DELETE と入力）", value="", key="confirm_bulk")
+if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
+    if confirm_word_bulk.strip().upper() == "DELETE":
+        df = df[~df["ID"].isin(del_targets)].copy()
+        save_tasks(df)
+        save_to_github_csv(debug=False)
+        st.success(f"{len(del_targets)}件のタスクを削除しました。")
+        st.cache_data.clear()
+        _clear_query_params()
+        st.rerun()
+    else:
+        st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
+
+# ===== サイドバー：手動保存＆診断 =====
+colA, colB = st.sidebar.columns(2)
+if colA.button("GitHubへ手動保存"):
+    save_to_github_csv(debug=False)
+if colB.button("GitHub保存の診断"):
+    save_to_github_csv(debug=True)
+
+st.sidebar.caption(f"Secrets keys: {list(st.secrets.keys())}")
+
+# ===== フッター =====
+st.caption("※ 起票日は新規作成時のみ自動セットし、以後は編集不可（既存値維持）。更新日は編集/クローズ操作でJSTの“いま”に自動更新。GitHub連携はGET→PUTで保存します。")
+``
