@@ -882,7 +882,7 @@ SNOWでは進行中インシデントへ移動済み
 
 二上　光一: CHG0031173：(放送)本番環境西DC PTAサーバ再起動作業（IIJ_PIM_PJ対応） | 【#】-【iNOC】PIM運用体制_IIJ > 02_作業依頼 | Microsoft Teams",nan,5ef83088-0432-4f0a-b740-68b560848511
 ,,[inoc:9242] オクタ操作,クローズ,都筑,"返信ないためクローズ
-更新日",oktaの問い合わせ先っぽいのをN-portalで見つけたので案内。【クラウド認証(Okta)紹介】,,de571f3c-4fa8-4426-b3cd-946360eb21d1
+更新日",oktaの問い合わせ先っぽいのをN-portalで見つけたので案内。【クラウド認証(Okta)紹介】,nan,de571f3c-4fa8-4426-b3cd-946360eb21d1
 ,2025-12-25,[inoc:9215] Okta Veirfy DNSエラー表示について,クローズ,都筑,テクノロジーの人が対応してそう？,nan,nan,1a315e20-810e-4ee4-9e5e-43cc17c65ca6
 ,2025-12-24,【お問い合わせ】CyberArk代理踏み台サーバからのWEBアクセスについて,未対応,nan,nan,"PIMとのやり取りの末iNOCに投げている模様。
 
@@ -928,4 +928,4 @@ https://teams.microsoft.com/l/message/19:7e876c1536f541c89b617949bca08eab@thread
 2025-12-28,,[inoc:9509] 【拡張ID:9502】<hc-pit-wv-wvb01> <低><バックアップエラー検知>,対応中,二上,返信待ち,"[inoc:7969] 【拡張ID:9502】<HC-PIT-WV-WVB01>　<3-低>
 に似たような事象ですが、エラーの内容が違うため起票しております。",nan,ee93aed5-4c7e-4672-a1dd-c3cfa042cc28
 ,,[inoc:9288] 外部インターネット接続時のIPアドレス範囲について,未対応,nan,nan,nan,nan,a5a0d309-ff23-4a1f-86ae-ba3e517b4f50
-2026-01-01,,てすと,対応中,都筑,nan,nan,nan,3abc4fc0-8666-4f16-abde-e4a6039cb4c7
+2026-01-01,,てすと,クローズ,都筑,nan,nan,nan,3abc4fc0-8666-4f16-abde-e4a6039cb4c7
