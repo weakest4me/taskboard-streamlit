@@ -49,7 +49,7 @@ def _get_query_params():
         return dict(st.query_params)
     except Exception:
         # 旧版のフォールバック
-        return {k: v[0] if isinstance(v, list) and v else v for k, v in st.experimental_get_query_params().items()}
+        return {k: (v[0] if isinstance(v, list) and v else v) for k, v in st.experimental_get_query_params().items()}
 
 def _clear_query_params():
     try:
@@ -260,18 +260,37 @@ disp = view_df.copy()
 disp["起票日"] = disp["起票日"].apply(_fmt_display)
 disp["更新日"] = disp["更新日"].apply(_fmt_display)
 
-# ▼ ここで「編集」リンク列を追加（相対リンクで同一ページのeditパラメータ）
-disp["編集"] = disp["ID"].apply(lambda _id: f"/?edit={_id}")
+# ▼ タスク列をクリック可能に（サブパスでも壊れないよう '?edit=<ID>'）
+#   ※ StreamlitのLinkColumnが有効な環境では「タスク」をリンク列として扱う。
+#   ※ 互換性のため、右端に「編集」リンク列も併設。
+disp["編集"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
+
+# 可能なら「タスク」列をリンク列化。不可なら通常テキストのまま + 「編集」列で遷移。
+link_column_supported = hasattr(st.column_config, "LinkColumn")
+col_config = {
+    "編集": st.column_config.LinkColumn("編集", help="編集画面を開く", width="small")
+}
+if link_column_supported:
+    # 一時的にリンク用の内部列を作成
+    disp["_task_link"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
+    # 「タスク」列をリンクとして表示（※表示テキストはタスク名、リンクは ?edit=ID）
+    # 一部のバージョンでは display_text が固定文字列になるため、その場合は「編集」列をご利用ください。
+    try:
+        col_config["タスク"] = st.column_config.LinkColumn("タスク", help="クリックで編集へ")
+        # 表示用に「タスク」をリンクURLに差し替え（見た目はURLになる場合あり）
+        # その場合は右端の「編集」列からも遷移可能です。
+        disp["タスク"] = disp["_task_link"]
+    except Exception:
+        # 失敗した場合は通常テキストに戻す
+        disp.drop(columns=["_task_link"], inplace=True, errors="ignore")
+else:
+    # LinkColumnがない環境では何もしない（右端の「編集」から遷移）
+    pass
 
 st.dataframe(
     disp.sort_values("更新日", ascending=False),
     use_container_width=True,
-    column_config={
-        # LinkColumn を使うとクリックで遷移できる
-        "編集": st.column_config.LinkColumn(
-            "編集", help="このタスクを編集画面で開く", width="small"
-        )
-    }
+    column_config=col_config
 )
 
 # ===== クローズ候補（.dtエラー対策版） =====
@@ -466,4 +485,3 @@ st.sidebar.caption(f"Secrets keys: {list(st.secrets.keys())}")
 
 # ===== フッター =====
 st.caption("※ 起票日は新規作成時のみ自動セットし、以後は編集不可（既存値維持）。更新日は編集/クローズ操作でJSTの“いま”に自動更新。GitHub連携はGET→PUTで保存します。")
-``
