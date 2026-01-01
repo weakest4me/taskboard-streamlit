@@ -936,19 +936,6 @@ https://teams.microsoft.com/l/message/19:7e876c1536f541c89b617949bca08eab@thread
 2026-01-01 00:00:00,2026-01-01 00:00:00,[inoc:9509] 【拡張ID:9502】<hc-pit-wv-wvb01> <低><バックアップエラー検知>,対応中,二上,返信待ち,"[inoc:7969] 【拡張ID:9502】<HC-PIT-WV-WVB01>　<3-低>
 に似たような事象ですが、エラーの内容が違うため起票しております。",,ee93aed5-4c7e-4672-a1dd-c3cfa042cc28
 2026-01-01 00:00:00,2026-01-01 00:00:00,[inoc:9288] 外部インターネット接続時のIPアドレス範囲について,未対応,,,,,a5a0d309-ff23-4a1f-86ae-ba3e517b4f50
-2026-01-01 18:06:08,2026-01-01 18:06:08,【対応依頼】pim-pit-i-ju01ログイン失敗複数検知について,未対応,都筑,TeamsにてMDEの件はオンボードがなされていないため、Op様側にてオンボードにすることは可能でしょうか。との問合せTier2に相談,"SOCにて10.207.137.10/pim-pit-i-ju01よりKerberos事前認証の失敗を検知しております。
-該当機器に関して以下のご対応をお願いできますでしょうか
- 
-・「10.207.137.10/pim-pit-i-ju01」で複数のPIM用アカウントに対して10月1日からログイン失敗ログが確認されていますが
-こちらは正常な挙動か保守ベンダにご確認にいただけますでしょうか
- 
-・pim-pit-i-ju01のイベントログを取得いただけますでしょうか?
-※本端末にはEDRが導入されていないようです。念の為、外部からログイン試行がされていないかご確認もお願いいたします。
- 
-メールでIIJに調査依頼中です
-[inoc:9566] RE: [inoc:9562] ReRE: 【自動受付】PIM問い合わせ対応依頼（緊急）(uom41278361)
-
-https://teams.microsoft.com/l/message/19:05b271fbb87f46899c45cd783e471ec9@thread.tacv2/1767183625177?tenantId=e7ffea03-7457-438f-9c5d-c9a2d0449ac0&groupId=aa7139e8-1530-41a1-95a0-bb35e64b5176&parentMessageId=1767183625177&teamName=%E3%80%90%23%E3%80%91-iNOC%E9%81%8B%E7%94%A8%E7%9B%A3%E8%A6%96(Op%C3%97Sec)&channelName=02_%E4%BD%9C%E6%A5%AD%E4%BE%9D%E9%A0%BC&createdTime=1767183625177",[inoc:9566] RE: [inoc:9562] ReRE: 【自動受付】PIM問い合わせ対応依頼（緊急）(uom41278361)　https://teams.microsoft.com/l/message/19:05b271fbb87f46899c45cd783e471ec9@thread.tacv2/1767183625177?tenantId=e7ffea03-7457-438f-9c5d-c9a2d0449ac0&groupId=aa7139e8-1530-41a1-95a0-bb35e64b5176&parentMessageId=1767183625177&teamName=%E3%80%90%23%E3%80%91-iNOC%E9%81%8B%E7%94%A8%E7%9B%A3%E8%A6%96(Op%C3%97Sec)&channelName=02_%E4%BD%9C%E6%A5%AD%E4%BE%9D%E9%A0%BC&createdTime=1767183625177,ba89e8bd-4872-42cd-9048-23e4bdb17b39
 2026-01-01 18:17:06,2026-01-01 18:17:06,【対応依頼】pim-pit-i-ju01ログイン失敗複数検知について,対応中,都筑,メール返信きたらTeamsでユーザーに共有してください,"SOCにて10.207.137.10/pim-pit-i-ju01よりKerberos事前認証の失敗を検知しております。
 該当機器に関して以下のご対応をお願いできますでしょうか
  
