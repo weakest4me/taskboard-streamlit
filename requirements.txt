@@ -1,4 +1,3 @@
-# requirements.txt（例）
-streamlit>=1.30
-pandas>=2.0
-streamlit-aggrid==1.2.1.post2
+pandas
+streamlit
+requests
