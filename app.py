@@ -260,32 +260,21 @@ disp = view_df.copy()
 disp["起票日"] = disp["起票日"].apply(_fmt_display)
 disp["更新日"] = disp["更新日"].apply(_fmt_display)
 
-# ▼ タスク列をクリック可能に（サブパスでも壊れないよう '?edit=<ID>'）
-#   ※ StreamlitのLinkColumnが有効な環境では「タスク」をリンク列として扱う。
-#   ※ 互換性のため、右端に「編集」リンク列も併設。
+# ▼ タスク列をクリック可能に（サブパスでも壊れないよう '?edit=<ID>'）＋右端「編集」列
 disp["編集"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
 
-# 可能なら「タスク」列をリンク列化。不可なら通常テキストのまま + 「編集」列で遷移。
 link_column_supported = hasattr(st.column_config, "LinkColumn")
 col_config = {
     "編集": st.column_config.LinkColumn("編集", help="編集画面を開く", width="small")
 }
 if link_column_supported:
-    # 一時的にリンク用の内部列を作成
+    # 「タスク」をリンク表示（環境により見た目がURLになる場合は右端「編集」を利用）
     disp["_task_link"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
-    # 「タスク」列をリンクとして表示（※表示テキストはタスク名、リンクは ?edit=ID）
-    # 一部のバージョンでは display_text が固定文字列になるため、その場合は「編集」列をご利用ください。
     try:
         col_config["タスク"] = st.column_config.LinkColumn("タスク", help="クリックで編集へ")
-        # 表示用に「タスク」をリンクURLに差し替え（見た目はURLになる場合あり）
-        # その場合は右端の「編集」列からも遷移可能です。
         disp["タスク"] = disp["_task_link"]
     except Exception:
-        # 失敗した場合は通常テキストに戻す
         disp.drop(columns=["_task_link"], inplace=True, errors="ignore")
-else:
-    # LinkColumnがない環境では何もしない（右端の「編集」から遷移）
-    pass
 
 st.dataframe(
     disp.sort_values("更新日", ascending=False),
@@ -302,11 +291,8 @@ in_progress = df[df["対応状況"].str.contains("対応中", na=False)]
 reply_df = df[reply_mask]
 closing_candidates = in_progress[in_progress.index.isin(reply_df.index)]
 
-# ★ ここで更新日を必ず datetime に正規化
 closing_candidates = closing_candidates.copy()
 closing_candidates["更新日"] = pd.to_datetime(closing_candidates["更新日"], errors="coerce")
-
-# ★ .dt を使わず、datetime 比較でフィルタ
 closing_candidates = closing_candidates[
     closing_candidates["更新日"].notna() & (closing_candidates["更新日"] < threshold_dt)
 ]
