@@ -14,14 +14,14 @@ JST = ZoneInfo("Asia/Tokyo")
 
 SAVE_WITH_TIME = bool(st.secrets.get("SAVE_WITH_TIME", True))  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
 
-def now_jst() -> datetime:
+def now_jst() -&gt; datetime:
     return datetime.now(JST)
 
-def now_jst_str() -> str:
+def now_jst_str() -&gt; str:
     fmt = "%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d"
     return now_jst().strftime(fmt)
 
-def today_jst() -> date:
+def today_jst() -&gt; date:
     return now_jst().date()
 
 # ===== ページ設定 =====
@@ -36,14 +36,14 @@ MANDATORY_COLS = [
 # ===== ユーティリティ =====
 MISSING_SET = {"", "none", "null", "nan", "na", "n/a", "-", "—"}
 
-def _ensure_str(x) -> str:
+def _ensure_str(x) -&gt; str:
     return "" if x is None else str(x)
 
-def _is_missing(x) -> bool:
+def _is_missing(x) -&gt; bool:
     s = _ensure_str(x).strip().lower()
     return s in MISSING_SET
 
-def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_df(df: pd.DataFrame) -&gt; pd.DataFrame:
     # 列名の単純正規化（全角スペース→半角、前後空白除去）
     df.columns = [c.replace("\u3000", " ").strip() for c in df.columns]
     # よくある別名の統一
@@ -79,7 +79,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 @st.cache_data(ttl=30)
-def load_tasks() -> pd.DataFrame:
+def load_tasks() -&gt; pd.DataFrame:
     try:
         df = pd.read_csv(CSV_PATH, encoding="utf-8-sig", dtype=str, keep_default_na=False)
     except FileNotFoundError:
@@ -89,7 +89,7 @@ def load_tasks() -> pd.DataFrame:
     df = safety_autofill_all(df)
     return df
 
-def _format_date_for_save(dt: pd.Timestamp) -> str:
+def _format_date_for_save(dt: pd.Timestamp) -&gt; str:
     if pd.isna(dt):
         return now_jst_str()  # 欠損は“いま”
     if SAVE_WITH_TIME:
@@ -107,7 +107,7 @@ def save_tasks(df: pd.DataFrame):
 
 # ===== 日付の安全弁（全行） =====
 
-def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
+def safety_autofill_all(df: pd.DataFrame) -&gt; pd.DataFrame:
     now_ts = pd.Timestamp(now_jst())
     # 起票日は欠損のみ補完（既存起票日は維持）
     df["起票日"] = df["起票日"].apply(lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce"))
@@ -166,7 +166,7 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
             st.error("401 Unauthorized: トークン無効。新しいPATをSecretsへ。")
         elif put.status_code == 403:
             st.error("403 Forbidden: 権限不足/保護ルール。PAT権限『Contents: Read and write』やブランチ保護を確認。")
-        elif put_status == 404:
+        elif put.status_code == 404:
             st.error("404 Not Found: OWNER/REPO/PATH/BRANCH を再確認。")
         elif put.status_code == 422:
             st.error("422 Unprocessable: SHA不正 or ブランチ保護。最新を取得して再保存してください。")
@@ -222,7 +222,7 @@ col4.metric("返信待ち系", reply_count)
 # ===== 一覧 =====
 st.subheader("一覧")
 # 表示用に日付を文字列化（SAVE_WITH_TIME に応じる）
-def _fmt_display(dt: pd.Timestamp) -> str:
+def _fmt_display(dt: pd.Timestamp) -&gt; str:
     if pd.isna(dt):
         return "-"
     return dt.strftime("%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d")
@@ -247,7 +247,7 @@ closing_candidates["更新日"] = pd.to_datetime(closing_candidates["更新日"]
 
 # ★ .dt を使わず、datetime 比較でフィルタ
 closing_candidates = closing_candidates[
-    closing_candidates["更新日"].notna() & (closing_candidates["更新日"] < threshold_dt)
+    closing_candidates["更新日"].notna() &amp; (closing_candidates["更新日"] &lt; threshold_dt)
 ]
 
 if closing_candidates.empty:
