@@ -1,11 +1,11 @@
 
 # app.py（完全版：直保存方式＋サイドバー・フィルター常時表示＋診断エクスパンダ）
 # ------------------------------------------------------------
-# 変更ポイント：
-# - 追加／編集／削除／クローズで「その場で」保存（ローカル→GitHub→キャッシュクリア→rerun）
-# - サイドバーは initial_sidebar_state="expanded" で常時展開
-# - 一覧は view_df を表示（フィルターが効く）
-# - GitHub保存は SHA 付き（競合 422 を検知→自動再読み込み）
+# 変更操作（追加／編集／削除／クローズ）後に
+#   1) ローカル保存 → 2) GitHubコミット → 3) キャッシュクリア → 4) rerun
+# をその場で実行して、更新漏れを無くします。
+# サイドバーは initial_sidebar_state="expanded" で常時展開。
+# 診断はメイン側のエクスパンダに配置（必要時のみ使用）。
 # ------------------------------------------------------------
 
 import streamlit as st
@@ -134,7 +134,8 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
 
         # ステータス別の分岐（見える化）
         if put.status_code in (200, 201):
-            st.toast("GitHubへ保存完了", icon="✅")
+            # 成功
+            pass
         elif put.status_code == 401:
             st.error("401 Unauthorized: トークンが無効（期限切れ／Revoke）。→ 新しいPATをSecretsへ。")
         elif put.status_code == 403:
@@ -144,8 +145,6 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
             st.error("404 Not Found: OWNER/REPO/PATH/BRANCH の不一致。→ Secretsの値と実URL/パスを再確認。")
         elif put.status_code == 422:
             st.error("422 Unprocessable: 他のユーザーが先に更新（sha不一致など）。最新データを読み込んで再操作してください。")
-            st.cache_data.clear()
-            st.rerun()
         else:
             st.error(f"GitHub保存失敗: {put.status_code} {put.text[:300]}")
 
@@ -154,6 +153,32 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
     except Exception as e:
         st.error(f"GitHub保存中に例外: {e}")
         return -1
+
+# ===== 保存＆確認を 1ヶ所に統一（直保存ヘルパー） =====
+def save_then_confirm_commit(df: pd.DataFrame, *, show_toast: bool = True) -> bool:
+    """
+    1) ローカルCSVへ保存
+    2) GitHubへコミット
+    3) 成功(200/201)ならキャッシュクリア
+    """
+    try:
+        # ローカルへ
+        save_tasks_locally(df)
+
+        # GitHubへ
+        status = save_to_github_csv(debug=False)
+
+        if status in (200, 201):
+            if show_toast:
+                st.toast("GitHubへ保存完了", icon="✅")
+            st.cache_data.clear()
+            return True
+        else:
+            st.error("GitHubへの保存に失敗しました。診断エクスパンダで GET/PUT の内容をご確認ください。")
+            return False
+    except Exception as e:
+        st.error(f"保存処理中に例外: {e}")
+        return False
 
 # ===== データ読み込み =====
 df = load_tasks()
@@ -230,14 +255,9 @@ else:
     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
         df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(now_jst())
-        # --- 直保存（確実に反映させる） ---
-        save_tasks_locally(df)
-        status = save_to_github_csv(debug=False)
-        if status in (200, 201):
+        ok = save_then_confirm_commit(df)
+        if ok:
             st.success(f"{len(to_close_ids)}件をクローズに更新しました。（GitHubへ保存完了）")
-        else:
-            st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
-        st.cache_data.clear()
         st.rerun()
 
 # ===== 新規追加（直保存方式） =====
@@ -267,14 +287,9 @@ with st.form("add"):
             "ソース": source,
         }
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        # --- 直保存（確実に反映させる） ---
-        save_tasks_locally(df)
-        status = save_to_github_csv(debug=False)
-        if status in (200, 201):
+        ok = save_then_confirm_commit(df)
+        if ok:
             st.success("追加しました。（GitHubへ保存完了）")
-        else:
-            st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
-        st.cache_data.clear()
         st.rerun()
 
 # ===== 編集・削除（直保存方式） =====
@@ -331,28 +346,18 @@ else:
         ]
         df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(now_jst())
 
-        # --- 直保存（確実に反映させる） ---
-        save_tasks_locally(df)
-        status = save_to_github_csv(debug=False)
-        if status in (200, 201):
+        ok = save_then_confirm_commit(df)
+        if ok:
             st.success("タスクを更新しました。（GitHubへ保存完了）")
-        else:
-            st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
-        st.cache_data.clear()
         st.rerun()
 
     elif delete_btn:
         if confirm_word.strip().upper() == "DELETE":
             df = df[~df["ID"].eq(choice_id)].copy()
-            # --- 直保存 ---
-            save_tasks_locally(df)
-            status = save_to_github_csv(debug=False)
-            if status in (200, 201):
+            ok = save_then_confirm_commit(df)
+            if ok:
                 st.success("タスクを削除しました。（GitHubへ保存完了）")
-            else:
-                st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
             st.session_state.pop("selected_id", None)
-            st.cache_data.clear()
             st.rerun()
         else:
             st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
@@ -368,14 +373,9 @@ confirm_word_bulk = st.text_input("確認ワード（DELETE と入力）", value
 if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
     if confirm_word_bulk.strip().upper() == "DELETE":
         df = df[~df["ID"].isin(del_targets)].copy()
-        # --- 直保存 ---
-        save_tasks_locally(df)
-        status = save_to_github_csv(debug=False)
-        if status in (200, 201):
+        ok = save_then_confirm_commit(df)
+        if ok:
             st.success(f"{len(del_targets)}件のタスクを削除しました。（GitHubへ保存完了）")
-        else:
-            st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
-        st.cache_data.clear()
         st.rerun()
     else:
         st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
@@ -392,9 +392,10 @@ with st.expander("GitHub保存の診断（必要なときだけ開く）", expan
         save_to_github_csv(debug=True)
 
     if manual_backup:
-        save_tasks_locally(df)
-        save_to_github_csv(debug=False)
-        st.success("バックアップ完了（GitHubへ保存しました）。")
+        # 現在の CSV を GitHub へコミット（保険用）
+        ok = save_then_confirm_commit(df, show_toast=False)
+        if ok:
+            st.success("バックアップ完了（GitHubへ保存しました）。")
 
     st.caption(f"Secrets keys（値は表示しません）: {list(st.secrets.keys())}")
 
