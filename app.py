@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
@@ -219,9 +220,9 @@ col2.metric("対応中", int(status_counts.get("対応中", 0)))
 col3.metric("クローズ", int(status_counts.get("クローズ", 0)))
 col4.metric("返信待ち系", reply_count)
 
-# ===== 一覧 =====
+# ===== 一覧（クリックで編集へ） =====
 st.subheader("一覧")
-# 表示用に日付を文字列化（SAVE_WITH_TIME に応じる）
+
 def _fmt_display(dt: pd.Timestamp) -> str:
     if pd.isna(dt):
         return "-"
@@ -230,7 +231,32 @@ def _fmt_display(dt: pd.Timestamp) -> str:
 disp = view_df.copy()
 disp["起票日"] = disp["起票日"].apply(_fmt_display)
 disp["更新日"] = disp["更新日"].apply(_fmt_display)
-st.dataframe(disp.sort_values("更新日", ascending=False), use_container_width=True)
+
+# ★ 編集リンク列（同一ページ遷移・クエリに id を付与）
+disp["編集"] = disp["ID"].apply(lambda x: f"?id={x}")
+
+column_config = {
+    "起票日": st.column_config.TextColumn("起票日"),
+    "更新日": st.column_config.TextColumn("更新日"),
+    "タスク": st.column_config.TextColumn("タスク", width="large"),
+    "対応状況": st.column_config.TextColumn("対応状況"),
+    "更新者": st.column_config.TextColumn("更新者"),
+    "次アクション": st.column_config.TextColumn("次アクション"),
+    "備考": st.column_config.TextColumn("備考", width="large"),
+    "ソース": st.column_config.TextColumn("ソース"),
+    "ID": st.column_config.TextColumn("ID"),
+    # ★ クリック可能なリンク列
+    "編集": st.column_config.LinkColumn("編集", help="クリックで編集フォームへ"),
+}
+
+st.data_editor(
+    disp.sort_values("更新日", ascending=False),
+    use_container_width=True,
+    hide_index=True,
+    column_config=column_config,
+    disabled=True,             # 一覧は編集不可
+    key="list_with_links",
+)
 
 # ===== クローズ候補（.dtエラー対策版） =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
@@ -310,18 +336,42 @@ with st.form("add"):
         st.cache_data.clear()
         st.rerun()
 
-# ===== 編集・削除 =====
+# ===== 編集・削除（クエリ id を初期選択に反映） =====
 st.subheader("タスク編集・削除（1件を選んで安全に更新／削除）")
 
 if len(df) == 0:
     st.info("編集対象のタスクがありません。まずは追加してください。")
 else:
+    ids = df_by_id.index.tolist()
+
+    # ★ クエリから id を取得（st.query_params があればそれを利用、無ければ experimental）
+    qid = None
+    try:
+        q = getattr(st, "query_params", None) or st.experimental_get_query_params()
+        if q and "id" in q:
+            v = q["id"]
+            qid = v if isinstance(v, str) else (v[0] if isinstance(v, list) and v else None)
+    except Exception:
+        qid = None
+
+    initial_index = ids.index(qid) if (qid in ids) else 0
+
     choice_id = st.selectbox(
         "編集対象",
-        options=df_by_id.index.tolist(),
+        options=ids,
+        index=initial_index,
         format_func=lambda _id: f'[{df_by_id.loc[_id,"対応状況"]}] {df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}',
         key="selected_id",
     )
+
+    # ★ 選択したIDを URL クエリに維持（共有や再訪がしやすい）
+    try:
+        if hasattr(st, "query_params"):
+            st.query_params["id"] = choice_id
+        else:
+            st.experimental_set_query_params(id=choice_id)
+    except Exception:
+        pass
 
     if choice_id not in df_by_id.index:
         st.warning("選択したIDが見つかりません。再読み込みします。")
