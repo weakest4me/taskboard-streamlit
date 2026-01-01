@@ -248,7 +248,6 @@ col2.metric("対応中", int(status_counts.get("対応中", 0)))
 col3.metric("クローズ", int(status_counts.get("クローズ", 0)))
 col4.metric("返信待ち系", reply_count)
 
-
 # ===== 一覧 =====
 st.subheader("一覧")
 
@@ -261,30 +260,19 @@ disp = view_df.copy()
 disp["起票日"] = disp["起票日"].apply(_fmt_display)
 disp["更新日"] = disp["更新日"].apply(_fmt_display)
 
-# ① タスク列をクリック可能なリンクにする（相対リンクは '?edit=<ID>' を使う）
-disp["タスク"] = disp.apply(
-    lambda r: r["タスク"] if not isinstance(r["ID"], str) or r["ID"].strip() == ""
-    else f'?edit={r["ID"]}',
-    axis=1
-)
+# ▼ ここで「編集」リンク列を追加（相対リンクで同一ページのeditパラメータ）
+disp["編集"] = disp["ID"].apply(lambda _id: f"/?edit={_id}")
 
-# ② （任意）右端に「編集」列も追加しておく（ユーザーに分かりやすくする）
-disp["編集"] = disp["ID"].apply(lambda _id: f'?edit={_id}')
-
-# ③ LinkColumn を設定してクリックで遷移できるようにする
 st.dataframe(
     disp.sort_values("更新日", ascending=False),
     use_container_width=True,
     column_config={
-        "タスク": st.column_config.LinkColumn(
-            "タスク", help="クリックでこのタスクの編集へ"
-        ),
+        # LinkColumn を使うとクリックで遷移できる
         "編集": st.column_config.LinkColumn(
-            "編集", help="編集画面を開く", width="small"
+            "編集", help="このタスクを編集画面で開く", width="small"
         )
     }
 )
-
 
 # ===== クローズ候補（.dtエラー対策版） =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
