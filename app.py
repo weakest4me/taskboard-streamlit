@@ -1,12 +1,11 @@
 
-# app.py（完全版：サイドバー・フィルター常時表示＋自動保存＋診断エクスパンダ）
+# app.py（完全版：直保存方式＋サイドバー・フィルター常時表示＋診断エクスパンダ）
 # ------------------------------------------------------------
-# ポイント：
-# - st.set_page_config を最上部で呼び、initial_sidebar_state="expanded"
-# - サイドバーのフィルターは st.sidebar.* を使用（コメントアウトしない）
-# - 一覧は df ではなく view_df を表示
-# - 変更後は st.session_state["dirty"] を立て、冒頭で自動保存
-# - GitHub保存は SHA 付き（競合時 422 → 自動再読込）
+# 変更ポイント：
+# - 追加／編集／削除／クローズで「その場で」保存（ローカル→GitHub→キャッシュクリア→rerun）
+# - サイドバーは initial_sidebar_state="expanded" で常時展開
+# - 一覧は view_df を表示（フィルターが効く）
+# - GitHub保存は SHA 付き（競合 422 を検知→自動再読み込み）
 # ------------------------------------------------------------
 
 import streamlit as st
@@ -17,7 +16,7 @@ from zoneinfo import ZoneInfo
 import base64
 import requests
 
-# ===== ページ設定（最初に呼ぶ） =====
+# ===== ページ設定（最初に呼ぶ：重要） =====
 st.set_page_config(
     page_title="タスク管理ボード（自動保存）",
     layout="wide",
@@ -33,7 +32,7 @@ def now_jst() -> datetime:
 def today_jst():
     return now_jst().date()
 
-# ===== CSVパスと必須列 =====
+# ===== CSV設定 =====
 CSV_PATH = "tasks.csv"
 MANDATORY_COLS = [
     "ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース",
@@ -46,7 +45,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = ""
 
-    # ID 正規化
+    # ID 正規化（空/重複を必ず解消）
     df["ID"] = df["ID"].astype(str).replace({"nan": ""})
     mask_empty = df["ID"].str.strip().eq("")
     if mask_empty.any():
@@ -55,7 +54,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     if dup_mask.any():
         df.loc[dup_mask, "ID"] = [str(uuid.uuid4()) for _ in range(dup_mask.sum())]
 
-    # 日付型
+    # 日付型（NaT許容）
     for col in ["起票日", "更新日"]:
         df[col] = pd.to_datetime(df[col], errors="coerce")
 
@@ -67,6 +66,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=30)
 def load_tasks() -> pd.DataFrame:
+    """CSV 読み込み（存在しなければ空表）"""
     try:
         df = pd.read_csv(CSV_PATH, encoding="utf-8-sig")
     except FileNotFoundError:
@@ -74,6 +74,7 @@ def load_tasks() -> pd.DataFrame:
     return _normalize_df(df)
 
 def save_tasks_locally(df: pd.DataFrame):
+    """CSV へ保存（日付は ISO 文字列）"""
     df_out = df.copy()
     for col in ["起票日", "更新日"]:
         df_out[col] = pd.to_datetime(df_out[col], errors="coerce").dt.strftime("%Y-%m-%d")
@@ -154,29 +155,9 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
         st.error(f"GitHub保存中に例外: {e}")
         return -1
 
-# ===== 自動保存フラグ（デバウンス） =====
-if "dirty" not in st.session_state:
-    st.session_state["dirty"] = False
-
-def autosave_if_needed(df: pd.DataFrame):
-    """状態更新があれば自動保存を実行（無限ループ防止のためフラグを下ろす）"""
-    if st.session_state.get("dirty", False):
-        # ローカル保存 → GitHub保存
-        save_tasks_locally(df)
-        status = save_to_github_csv(debug=False)
-        # フラグを下ろす
-        st.session_state["dirty"] = False
-        # 成功時は最新を読み直して再描画
-        if status in (200, 201):
-            st.cache_data.clear()
-            st.rerun()
-
 # ===== データ読み込み =====
 df = load_tasks()
 df_by_id = df.set_index("ID")
-
-# ===== ページ冒頭で自動保存（dirty が立っていれば） =====
-autosave_if_needed(df)
 
 # ===== サイドバー・フィルター（常時表示） =====
 st.sidebar.header("フィルター")
@@ -248,18 +229,24 @@ else:
     )
     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
-        df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(today_jst())
-        st.session_state["dirty"] = True
-        st.success(f"{len(to_close_ids)}件をクローズに更新しました。")
+        df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(now_jst())
+        # --- 直保存（確実に反映させる） ---
+        save_tasks_locally(df)
+        status = save_to_github_csv(debug=False)
+        if status in (200, 201):
+            st.success(f"{len(to_close_ids)}件をクローズに更新しました。（GitHubへ保存完了）")
+        else:
+            st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
+        st.cache_data.clear()
         st.rerun()
 
-# ===== 新規追加 =====
+# ===== 新規追加（直保存方式） =====
 st.subheader("新規タスク追加（保存は自動）")
 with st.form("add"):
     c1, c2, c3 = st.columns(3)
     created = c1.date_input("起票日", today_jst())
     updated = c2.date_input("更新日", today_jst())
-    status = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
+    status_sel_add = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
     task = st.text_input("タスク（件名）")
     ass_choices = sorted(set(df["更新者"].tolist() + ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"]))
     assignee = st.selectbox("更新者（担当）", options=ass_choices)
@@ -273,18 +260,24 @@ with st.form("add"):
             "起票日": pd.Timestamp(created),
             "更新日": pd.Timestamp(updated),
             "タスク": task,
-            "対応状況": status,
+            "対応状況": status_sel_add,
             "更新者": assignee,
             "次アクション": next_action,
             "備考": notes,
             "ソース": source,
         }
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        st.session_state["dirty"] = True
-        st.success("追加しました（自動保存を実行します）。")
+        # --- 直保存（確実に反映させる） ---
+        save_tasks_locally(df)
+        status = save_to_github_csv(debug=False)
+        if status in (200, 201):
+            st.success("追加しました。（GitHubへ保存完了）")
+        else:
+            st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
+        st.cache_data.clear()
         st.rerun()
 
-# ===== 編集・削除 =====
+# ===== 編集・削除（直保存方式） =====
 st.subheader("タスク編集・削除（1件を選んで安全に更新／削除）")
 if len(df) == 0:
     st.info("編集対象のタスクがありません。まずは追加してください。")
@@ -325,31 +318,46 @@ else:
 
         col_ok, col_spacer, col_del = st.columns([1, 1, 1])
         submit_edit = col_ok.form_submit_button("更新する", type="primary")
+
         st.markdown("##### 削除（危険）")
         st.warning("この操作は元に戻せません。削除する場合、確認ワードに `DELETE` と入力してください。")
         confirm_word = st.text_input("確認ワード（DELETE と入力）", value="", key=f"confirm_{choice_id}")
         delete_btn = col_del.form_submit_button("このタスクを削除", type="secondary")
 
     if submit_edit:
+        # --- 更新反映 ---
         df.loc[df["ID"] == choice_id, ["タスク","対応状況","更新者","次アクション","備考","ソース"]] = [
             task_e, status_e, assignee_e, next_action_e, notes_e, source_e
         ]
-        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(today_jst())
-        st.session_state["dirty"] = True
-        st.success("タスクを更新しました（自動保存）。")
+        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(now_jst())
+
+        # --- 直保存（確実に反映させる） ---
+        save_tasks_locally(df)
+        status = save_to_github_csv(debug=False)
+        if status in (200, 201):
+            st.success("タスクを更新しました。（GitHubへ保存完了）")
+        else:
+            st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
+        st.cache_data.clear()
         st.rerun()
 
     elif delete_btn:
         if confirm_word.strip().upper() == "DELETE":
             df = df[~df["ID"].eq(choice_id)].copy()
+            # --- 直保存 ---
+            save_tasks_locally(df)
+            status = save_to_github_csv(debug=False)
+            if status in (200, 201):
+                st.success("タスクを削除しました。（GitHubへ保存完了）")
+            else:
+                st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
             st.session_state.pop("selected_id", None)
-            st.session_state["dirty"] = True
-            st.success("タスクを削除しました（自動保存）。")
+            st.cache_data.clear()
             st.rerun()
         else:
             st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
 
-# ===== 一括削除 =====
+# ===== 一括削除（直保存方式） =====
 st.subheader("一括削除（複数選択）")
 del_targets = st.multiselect(
     "削除したいタスク（複数選択）",
@@ -360,8 +368,14 @@ confirm_word_bulk = st.text_input("確認ワード（DELETE と入力）", value
 if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
     if confirm_word_bulk.strip().upper() == "DELETE":
         df = df[~df["ID"].isin(del_targets)].copy()
-        st.session_state["dirty"] = True
-        st.success(f"{len(del_targets)}件のタスクを削除しました（自動保存）。")
+        # --- 直保存 ---
+        save_tasks_locally(df)
+        status = save_to_github_csv(debug=False)
+        if status in (200, 201):
+            st.success(f"{len(del_targets)}件のタスクを削除しました。（GitHubへ保存完了）")
+        else:
+            st.error("GitHubへの保存に失敗しました。診断エクスパンダで詳細をご確認ください。")
+        st.cache_data.clear()
         st.rerun()
     else:
         st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
