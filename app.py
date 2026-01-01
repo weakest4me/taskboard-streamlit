@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-タスク管理ボード（完全版 / 複数人運用向け）
+タスク管理ボード（完全版 / 複数人運用向け / タイムゾーン安全化）
 
 機能:
 - CSV 永続化 + GitHub 連携（SHA による楽観的ロック / 成否でUI分岐 / committer情報）
@@ -8,6 +8,7 @@
 - 簡易ログイン（Secrets の USERS によるトークン方式）
 - 監査ログ（audit.csv）: 作成 / 更新 / 削除 / 一括削除 / クローズ を記録
 - フィルタ、一覧、クローズ候補抽出（対応中 + 返信待ち系 + 7日前より前の更新）
+- 手動リフレッシュボタン（最新反映）
 
 注意:
 - Secrets の SAVE_WITH_TIME は文字列でも正しく解釈されます（true/false/1/0/yes/no/on/off）。
@@ -40,7 +41,6 @@ AUDIT_PATH = st.secrets.get("AUDIT_PATH", "audit.csv")
 
 # ===== タイムゾーン・ヘルパー =====
 JST = ZoneInfo("Asia/Tokyo")
-
 SAVE_WITH_TIME = get_bool_secret("SAVE_WITH_TIME", True)  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
 
 
@@ -117,7 +117,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=10)
 def load_tasks() -> pd.DataFrame:
     try:
         df = pd.read_csv(CSV_PATH, encoding="utf-8-sig", dtype=str, keep_default_na=False)
@@ -281,6 +281,14 @@ if USERS:
 else:
     st.session_state.setdefault("current_user", "anonymous")
 
+# ===== 手動リフレッシュ =====
+
+def _do_refresh():
+    st.cache_data.clear()
+    st.rerun()
+
+st.sidebar.button("最新を読み込む", on_click=_do_refresh)
+
 # ===== サイドバー・フィルター =====
 st.sidebar.header("フィルター")
 status_options = ["すべて"] + sorted(df["対応状況"].dropna().unique().tolist())
@@ -328,6 +336,14 @@ st.subheader("一覧")
 def _fmt_display(dt: pd.Timestamp) -> str:
     if pd.isna(dt):
         return "-"
+    # tz付きでも安全に表示（JST想定なら tz情報は捨ててOK）
+    try:
+        ts = pd.Timestamp(dt)
+        if getattr(ts, "tzinfo", None) is not None:
+            ts = ts.tz_localize(None)
+        dt = ts
+    except Exception:
+        pass
     return dt.strftime("%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d")
 
 
@@ -338,7 +354,9 @@ st.dataframe(disp.sort_values("更新日", ascending=False), use_container_width
 
 # ===== クローズ候補 =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
-threshold_dt = pd.Timestamp(now_jst()) - pd.Timedelta(days=7)
+# tz-aware を tz-naive に統一してから 7日前閾値を計算
+now_ts = pd.Timestamp(now_jst()).tz_localize(None)
+threshold_dt = now_ts - pd.Timedelta(days=7)
 
 in_progress = df[df["対応状況"].eq("対応中")]
 reply_df = df[reply_mask]
@@ -346,6 +364,13 @@ closing_candidates = in_progress[in_progress.index.isin(reply_df.index)]
 
 closing_candidates = closing_candidates.copy()
 closing_candidates["更新日"] = pd.to_datetime(closing_candidates["更新日"], errors="coerce")
+# 混在対策: tz付きだけ tz を外す
+try:
+    if getattr(closing_candidates["更新日"].dt, "tz", None) is not None:
+        closing_candidates["更新日"] = closing_candidates["更新日"].dt.tz_localize(None)
+except Exception:
+    pass
+
 closing_candidates = closing_candidates[
     closing_candidates["更新日"].notna() & (closing_candidates["更新日"] < threshold_dt)
 ]
@@ -398,11 +423,11 @@ with st.form("add"):
 
     submitted = st.form_submit_button("追加", type="primary")
     if submitted:
-        now_ts = pd.Timestamp(now_jst())
+        now_ts2 = pd.Timestamp(now_jst())
         new_row = {
             "ID": str(uuid.uuid4()),
-            "起票日": now_ts,
-            "更新日": now_ts,
+            "起票日": now_ts2,
+            "更新日": now_ts2,
             "タスク": task,
             "対応状況": status,
             "更新者": assignee,
