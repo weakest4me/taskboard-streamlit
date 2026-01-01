@@ -4,6 +4,8 @@ import pandas as pd
 from datetime import datetime
 import uuid
 from zoneinfo import ZoneInfo  # タイムゾーン（Python 3.9+）
+import base64
+import requests
 
 # ===== タイムゾーン・ヘルパー =====
 JST = ZoneInfo("Asia/Tokyo")
@@ -21,7 +23,9 @@ st.set_page_config(page_title="タスク管理ボード", layout="wide")
 st.title("タスク管理ボード（試作）")
 
 CSV_PATH = "tasks.csv"
-MANDATORY_COLS = ["ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース"]
+MANDATORY_COLS = [
+    "ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース",
+]
 
 # ===== ユーティリティ =====
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -33,13 +37,10 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- ID 正規化（最重要） ---
     df["ID"] = df["ID"].astype(str)
-    # 'nan' 文字を空扱い
     df["ID"] = df["ID"].replace({"nan": ""})
-    # 空IDに UUID 付与
     mask_empty = df["ID"].str.strip().eq("")
     if mask_empty.any():
         df.loc[mask_empty, "ID"] = [str(uuid.uuid4()) for _ in range(mask_empty.sum())]
-    # 重複IDは後続に新UUID
     dup_mask = df["ID"].duplicated(keep="first")
     if dup_mask.any():
         df.loc[dup_mask, "ID"] = [str(uuid.uuid4()) for _ in range(dup_mask.sum())]
@@ -52,7 +53,6 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["タスク", "対応状況", "更新者", "次アクション", "備考", "ソース"]:
         df[col] = df[col].astype(str)
 
-    # 見た目用に index を連番（識別は ID を使用）
     return df.reset_index(drop=True)
 
 @st.cache_data(ttl=30)
@@ -70,18 +70,58 @@ def save_tasks(df: pd.DataFrame):
         df_out[col] = pd.to_datetime(df_out[col], errors="coerce").dt.strftime("%Y-%m-%d")
     df_out.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
 
+# ===== GitHubへコミット保存 =====
+def save_to_github_csv(local_path: str = CSV_PATH):
+    """ローカルCSVを GitHub の指定パスへコミット（Secrets 必須）"""
+    try:
+        token  = st.secrets["GITHUB_TOKEN"]
+        owner  = st.secrets["GITHUB_OWNER"]
+        repo   = st.secrets["GITHUB_REPO"]
+        path   = st.secrets["GITHUB_PATH"]
+        branch = st.secrets.get("GITHUB_BRANCH", "main")
+    except Exception:
+        st.info("GitHub Secrets が未設定のため、コミット保存をスキップしました。")
+        return
+
+    try:
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+        headers = {"Authorization": f"token {token}"}
+
+        # 既存ファイルのSHA取得（更新に必要）
+        r = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
+        sha = r.json().get("sha") if r.status_code == 200 else None
+
+        # CSVをbase64化
+        with open(local_path, "rb") as f:
+            content_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        ts = now_jst().strftime("%Y-%m-%d %H:%M:%S %Z")
+        payload = {
+            "message": f"Update tasks.csv from Streamlit app ({ts})",
+            "content": content_b64,
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+
+        put = requests.put(url, headers=headers, json=payload, timeout=20)
+        if put.status_code in (200, 201):
+            st.toast("GitHubへ保存完了", icon="✅")
+        else:
+            st.error(f"GitHub保存失敗: {put.status_code} {put.text}")
+    except Exception as e:
+        st.error(f"GitHub保存中に例外が発生: {e}")
+
 # ===== データ読み込み =====
 df = load_tasks()
-df_by_id = df.set_index("ID")  # 以降は必ず ID で突き合わせ
+df_by_id = df.set_index("ID")
 
 # ===== サイドバー・フィルター =====
 st.sidebar.header("フィルター")
 status_options = ["すべて"] + sorted(df["対応状況"].dropna().unique().tolist())
 status_sel = st.sidebar.selectbox("対応状況", status_options)
-
 assignees = sorted(df["更新者"].dropna().unique().tolist())
 assignee_sel = st.sidebar.multiselect("担当者", assignees)
-
 kw = st.sidebar.text_input("キーワード（更新日/タスク/備考/次アクション）")
 
 view_df = df.copy()
@@ -101,7 +141,6 @@ if kw:
 total = len(df)
 status_counts = df["対応状況"].value_counts()
 
-# 明示的なブール Series で初期化（NaT 行にも対応し安全）
 reply_mask = pd.Series(False, index=df.index)
 for k in ["返信待ち", "返信無し", "返信なし", "返信ない", "催促"]:
     reply_mask = (
@@ -124,8 +163,7 @@ st.dataframe(view_df.sort_values("更新日", ascending=False), use_container_wi
 # ===== クローズ候補 =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
 
-# JST の「今日」から 7日前（date型）で比較することで tz 衝突を回避
-threshold_date = today_jst() - pd.Timedelta(days=7)
+threshold_date = today_jst() - pd.Timedelta(days=7)  # “日付”で比較
 
 in_progress = df[df["対応状況"].str.contains("対応中", na=False)]
 reply_df = df[reply_mask]
@@ -147,8 +185,9 @@ else:
     )
     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
-        df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(today_jst())  # JST の“今日”（dateベース）
+        df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(today_jst())
         save_tasks(df)
+        save_to_github_csv()  # ★ GitHubへコミット
         st.success(f"{len(to_close_ids)}件をクローズに更新しました。")
         st.cache_data.clear()
         st.rerun()
@@ -157,8 +196,8 @@ else:
 st.subheader("新規タスク追加")
 with st.form("add"):
     c1, c2, c3 = st.columns(3)
-    created = c1.date_input("起票日", today_jst())  # JST の“今日”
-    updated = c2.date_input("更新日", today_jst())  # JST の“今日”
+    created = c1.date_input("起票日", today_jst())
+    updated = c2.date_input("更新日", today_jst())
     status = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
 
     task = st.text_input("タスク（件名）")
@@ -184,6 +223,7 @@ with st.form("add"):
         }
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         save_tasks(df)
+        save_to_github_csv()  # ★ GitHubへコミット
         st.success("追加しました。")
         st.cache_data.clear()
         st.rerun()
@@ -202,7 +242,6 @@ else:
         key="selected_id",
     )
 
-    # 存在ガード
     if choice_id not in df_by_id.index:
         st.warning("選択したIDが見つかりません。再読み込みします。")
         st.cache_data.clear()
@@ -244,8 +283,9 @@ else:
         df.loc[df["ID"] == choice_id, ["タスク","対応状況","更新者","次アクション","備考","ソース"]] = [
             task_e, status_e, assignee_e, next_action_e, notes_e, source_e
         ]
-        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(today_jst())  # JST の“今日”（dateベース）
+        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(today_jst())
         save_tasks(df)
+        save_to_github_csv()  # ★ GitHubへコミット
         st.success("タスクを更新しました。")
         st.cache_data.clear()
         st.rerun()
@@ -254,7 +294,7 @@ else:
         if confirm_word.strip().upper() == "DELETE":
             df = df[~df["ID"].eq(choice_id)].copy()
             save_tasks(df)
-            # 削除後に古い選択IDを参照しないようクリア
+            save_to_github_csv()  # ★ GitHubへコミット
             st.session_state.pop("selected_id", None)
             st.success("タスクを削除しました。")
             st.cache_data.clear()
@@ -275,11 +315,16 @@ if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
     if confirm_word_bulk.strip().upper() == "DELETE":
         df = df[~df["ID"].isin(del_targets)].copy()
         save_tasks(df)
+        save_to_github_csv()  # ★ GitHubへコミット
         st.success(f"{len(del_targets)}件のタスクを削除しました。")
         st.cache_data.clear()
         st.rerun()
     else:
         st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
 
+# ===== サイドバー：手動コミット（任意） =====
+if st.sidebar.button("GitHubへ手動保存を実行"):
+    save_to_github_csv()
+
 # ===== フッター =====
-st.caption("※ この試作はローカルCSV保存です。複数人での同時編集には SharePoint/Dataverse/Database を推奨。")
+st.caption("※ この試作はローカルCSV保存です。複数人での同時編集には SharePoint/Dataverse/Database を推奨。GitHub連携でCSVの永続化が可能です。")
