@@ -166,7 +166,7 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
             st.error("401 Unauthorized: トークン無効。新しいPATをSecretsへ。")
         elif put.status_code == 403:
             st.error("403 Forbidden: 権限不足/保護ルール。PAT権限『Contents: Read and write』やブランチ保護を確認。")
-        elif put.status_code == 404:
+        elif put_status == 404:
             st.error("404 Not Found: OWNER/REPO/PATH/BRANCH を再確認。")
         elif put.status_code == 422:
             st.error("422 Unprocessable: SHA不正 or ブランチ保護。最新を取得して再保存してください。")
