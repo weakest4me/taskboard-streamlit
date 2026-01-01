@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
@@ -12,7 +13,15 @@ import requests
 # ===== タイムゾーン・ヘルパー =====
 JST = ZoneInfo("Asia/Tokyo")
 
-SAVE_WITH_TIME = bool(st.secrets.get("SAVE_WITH_TIME", True))  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
+# SecretsのSAVE_WITH_TIMEを安全にパース（"true"/"false"などの文字列にも対応）
+def _parse_bool(v, default=True):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "t", "yes", "on"}
+    return default
+
+SAVE_WITH_TIME = _parse_bool(st.secrets.get("SAVE_WITH_TIME", True))  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
 
 def now_jst() -> datetime:
     return datetime.now(JST)
@@ -166,7 +175,7 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
             st.error("401 Unauthorized: トークン無効。新しいPATをSecretsへ。")
         elif put.status_code == 403:
             st.error("403 Forbidden: 権限不足/保護ルール。PAT権限『Contents: Read and write』やブランチ保護を確認。")
-        elif put_status == 404:
+        elif put.status_code == 404:
             st.error("404 Not Found: OWNER/REPO/PATH/BRANCH を再確認。")
         elif put.status_code == 422:
             st.error("422 Unprocessable: SHA不正 or ブランチ保護。最新を取得して再保存してください。")
@@ -181,9 +190,9 @@ df_by_id = df.set_index("ID")
 
 # ===== サイドバー・フィルター =====
 st.sidebar.header("フィルター")
-status_options = ["すべて"] + sorted(df["対応状況"].dropna().unique().tolist())
+status_options = ["すべて"] + sorted([s for s in df["対応状況"].dropna().unique().tolist() if s.strip() != ""])
 status_sel = st.sidebar.selectbox("対応状況", status_options)
-assignees = sorted(df["更新者"].dropna().unique().tolist())
+assignees = sorted([a for a in df["更新者"].dropna().unique().tolist() if a.strip() != ""])
 assignee_sel = st.sidebar.multiselect("担当者", assignees)
 kw = st.sidebar.text_input("キーワード（タスク/備考/次アクション）")
 
@@ -282,7 +291,7 @@ with st.form("add"):
 
     task = st.text_input("タスク（件名）")
     fixed_assignees = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])  # 任意固定
-    ass_choices = sorted(set(df["更新者"].tolist() + list(fixed_assignees)))
+    ass_choices = sorted(set([a for a in df["更新者"].tolist() if a.strip() != ""] + list(fixed_assignees)))
     assignee = st.selectbox("更新者（担当）", options=ass_choices)
 
     next_action = st.text_area("次アクション")
@@ -338,7 +347,7 @@ else:
         )
 
         fixed_assignees_e = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])  # 任意固定
-        ass_choices_e = sorted(set(df["更新者"].tolist() + list(fixed_assignees_e)))
+        ass_choices_e = sorted(set([a for a in df["更新者"].tolist() if a.strip() != ""] + list(fixed_assignees_e)))
         default_assignee = df_by_id.loc[choice_id, "更新者"]
         ass_index = ass_choices_e.index(default_assignee) if default_assignee in ass_choices_e else 0
         assignee_e = c3.selectbox("更新者（担当）", options=ass_choices_e, index=ass_index, key=f"assignee_{choice_id}")
