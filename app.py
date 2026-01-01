@@ -139,7 +139,7 @@ def _format_date_for_save(dt: pd.Timestamp) -> str:
         return pd.to_datetime(dt).strftime("%Y-%m-%d")
 
 
-ndef save_tasks(df: pd.DataFrame):
+def save_tasks(df: pd.DataFrame):
     """保存前に安全弁をかけ、CSVへ書き出し"""
     df_out = safety_autofill_all(df.copy())
     for col in ["起票日", "更新日"]:
