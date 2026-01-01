@@ -42,6 +42,29 @@ MANDATORY_COLS = [
     "ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース",
 ]
 
+# ▼ クエリパラメータ(edit)を取り込んで選択IDに反映
+def _get_query_params():
+    # Streamlit 1.30+ : st.query_params
+    try:
+        return dict(st.query_params)
+    except Exception:
+        # 旧版のフォールバック
+        return {k: v[0] if isinstance(v, list) and v else v for k, v in st.experimental_get_query_params().items()}
+
+def _clear_query_params():
+    try:
+        st.query_params.clear()
+    except Exception:
+        # 旧版は空で上書き
+        st.experimental_set_query_params()
+
+qp = _get_query_params()
+edit_param = qp.get("edit")
+if edit_param:
+    # 一度だけ反映（無限ループ防止）
+    if "selected_id" not in st.session_state or st.session_state.get("selected_id") != edit_param:
+        st.session_state["selected_id"] = edit_param
+
 # ===== ユーティリティ =====
 MISSING_SET = {"", "none", "null", "nan", "na", "n/a", "-", "—"}
 
@@ -106,7 +129,6 @@ def _format_date_for_save(dt: pd.Timestamp) -> str:
     else:
         return pd.to_datetime(dt).strftime("%Y-%m-%d")
 
-
 def save_tasks(df: pd.DataFrame):
     """保存前に安全弁をかけ、CSVへ書き出し"""
     df_out = safety_autofill_all(df.copy())
@@ -115,7 +137,6 @@ def save_tasks(df: pd.DataFrame):
     df_out.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
 
 # ===== 日付の安全弁（全行） =====
-
 def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
     now_ts = pd.Timestamp(now_jst())
     # 起票日は欠損のみ補完（既存起票日は維持）
@@ -125,7 +146,6 @@ def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ===== GitHubへコミット保存（診断付き） =====
-
 def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
     required_keys = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PATH"]
     missing = [k for k in required_keys if k not in st.secrets]
@@ -230,7 +250,7 @@ col4.metric("返信待ち系", reply_count)
 
 # ===== 一覧 =====
 st.subheader("一覧")
-# 表示用に日付を文字列化（SAVE_WITH_TIME に応じる）
+
 def _fmt_display(dt: pd.Timestamp) -> str:
     if pd.isna(dt):
         return "-"
@@ -239,7 +259,20 @@ def _fmt_display(dt: pd.Timestamp) -> str:
 disp = view_df.copy()
 disp["起票日"] = disp["起票日"].apply(_fmt_display)
 disp["更新日"] = disp["更新日"].apply(_fmt_display)
-st.dataframe(disp.sort_values("更新日", ascending=False), use_container_width=True)
+
+# ▼ ここで「編集」リンク列を追加（相対リンクで同一ページのeditパラメータ）
+disp["編集"] = disp["ID"].apply(lambda _id: f"/?edit={_id}")
+
+st.dataframe(
+    disp.sort_values("更新日", ascending=False),
+    use_container_width=True,
+    column_config={
+        # LinkColumn を使うとクリックで遷移できる
+        "編集": st.column_config.LinkColumn(
+            "編集", help="このタスクを編集画面で開く", width="small"
+        )
+    }
+)
 
 # ===== クローズ候補（.dtエラー対策版） =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
@@ -279,6 +312,7 @@ else:
         save_to_github_csv(debug=False)
         st.success(f"{len(to_close_ids)}件をクローズに更新しました。")
         st.cache_data.clear()
+        _clear_query_params()
         st.rerun()
 
 # ===== 新規追加 =====
@@ -317,6 +351,7 @@ with st.form("add"):
         save_to_github_csv(debug=False)
         st.success("追加しました（起票・更新はJSTの“いま”）。")
         st.cache_data.clear()
+        _clear_query_params()
         st.rerun()
 
 # ===== 編集・削除 =====
@@ -325,9 +360,15 @@ st.subheader("タスク編集・削除（1件を選んで安全に更新／削�
 if len(df) == 0:
     st.info("編集対象のタスクがありません。まずは追加してください。")
 else:
+    # ▼ クエリ or セッションの選択を優先して初期選択
+    preselect_id = st.session_state.get("selected_id")
+    options_ids = df_by_id.index.tolist()
+    default_index = options_ids.index(preselect_id) if (preselect_id in options_ids) else 0
+
     choice_id = st.selectbox(
         "編集対象",
-        options=df_by_id.index.tolist(),
+        options=options_ids,
+        index=default_index,
         format_func=lambda _id: f'[{df_by_id.loc[_id,"対応状況"]}] {df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}',
         key="selected_id",
     )
@@ -335,6 +376,7 @@ else:
     if choice_id not in df_by_id.index:
         st.warning("選択したIDが見つかりません。再読み込みします。")
         st.cache_data.clear()
+        _clear_query_params()
         st.rerun()
 
     with st.form(f"edit_task_{choice_id}"):
@@ -377,6 +419,7 @@ else:
         save_to_github_csv(debug=False)
         st.success("タスクを更新しました（更新日はJSTの“いま”）。")
         st.cache_data.clear()
+        _clear_query_params()
         st.rerun()
 
     elif delete_btn:
@@ -387,6 +430,7 @@ else:
             st.session_state.pop("selected_id", None)
             st.success("タスクを削除しました。")
             st.cache_data.clear()
+            _clear_query_params()
             st.rerun()
         else:
             st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
@@ -406,6 +450,7 @@ if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
         save_to_github_csv(debug=False)
         st.success(f"{len(del_targets)}件のタスクを削除しました。")
         st.cache_data.clear()
+        _clear_query_params()
         st.rerun()
     else:
         st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
@@ -421,3 +466,4 @@ st.sidebar.caption(f"Secrets keys: {list(st.secrets.keys())}")
 
 # ===== フッター =====
 st.caption("※ 起票日は新規作成時のみ自動セットし、以後は編集不可（既存値維持）。更新日は編集/クローズ操作でJSTの“いま”に自動更新。GitHub連携はGET→PUTで保存します。")
+``
