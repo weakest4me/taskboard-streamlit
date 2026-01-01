@@ -1,5 +1,14 @@
 
-# app.py（完全版：自動保存＋診断エクスパンダ＋サイドバー・フィルター）
+# app.py（完全版：サイドバー・フィルター常時表示＋自動保存＋診断エクスパンダ）
+# ------------------------------------------------------------
+# ポイント：
+# - st.set_page_config を最上部で呼び、initial_sidebar_state="expanded"
+# - サイドバーのフィルターは st.sidebar.* を使用（コメントアウトしない）
+# - 一覧は df ではなく view_df を表示
+# - 変更後は st.session_state["dirty"] を立て、冒頭で自動保存
+# - GitHub保存は SHA 付き（競合時 422 → 自動再読込）
+# ------------------------------------------------------------
+
 import streamlit as st
 import pandas as pd
 import uuid
@@ -8,18 +17,20 @@ from zoneinfo import ZoneInfo
 import base64
 import requests
 
-# ===== ページ設定 =====
-st.set_page_config(page_title="タスク管理ボード（自動保存対応）", layout="wide")
-st.title("タスク管理ボード")
+# ===== ページ設定（最初に呼ぶ） =====
+st.set_page_config(
+    page_title="タスク管理ボード（自動保存）",
+    layout="wide",
+    initial_sidebar_state="expanded"  # ← サイドバーを常時展開
+)
+st.title("タスク管理ボード（自動保存）")
 
 # ===== タイムゾーン（JST） =====
 JST = ZoneInfo("Asia/Tokyo")
 def now_jst() -> datetime:
-    """現在日時（JST）"""
     return datetime.now(JST)
 
 def today_jst():
-    """今日（日付のみ, JST の date 型）"""
     return now_jst().date()
 
 # ===== CSVパスと必須列 =====
@@ -30,13 +41,12 @@ MANDATORY_COLS = [
 
 # ===== ユーティリティ =====
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """CSV読み込み後の型整備・欠損列追加（IDの空/重複も必ず解消）"""
     # 必須列が無ければ追加
     for col in MANDATORY_COLS:
         if col not in df.columns:
             df[col] = ""
 
-    # ID 正規化（最重要）
+    # ID 正規化
     df["ID"] = df["ID"].astype(str).replace({"nan": ""})
     mask_empty = df["ID"].str.strip().eq("")
     if mask_empty.any():
@@ -45,7 +55,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     if dup_mask.any():
         df.loc[dup_mask, "ID"] = [str(uuid.uuid4()) for _ in range(dup_mask.sum())]
 
-    # 日付の型（NaTを許容）
+    # 日付型
     for col in ["起票日", "更新日"]:
         df[col] = pd.to_datetime(df[col], errors="coerce")
 
@@ -57,7 +67,6 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=30)
 def load_tasks() -> pd.DataFrame:
-    """CSV 読み込み（存在しなければ空の表を返す）"""
     try:
         df = pd.read_csv(CSV_PATH, encoding="utf-8-sig")
     except FileNotFoundError:
@@ -65,7 +74,6 @@ def load_tasks() -> pd.DataFrame:
     return _normalize_df(df)
 
 def save_tasks_locally(df: pd.DataFrame):
-    """CSV へ保存（日付は ISO 文字列）"""
     df_out = df.copy()
     for col in ["起票日", "更新日"]:
         df_out[col] = pd.to_datetime(df_out[col], errors="coerce").dt.strftime("%Y-%m-%d")
@@ -76,7 +84,7 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
     """
     ローカルCSVを GitHub の指定パスへコミット保存。
     - 直前 GET の sha をPUT payloadに含めて競合検知（他ユーザー更新 → 422）
-    - 成功: 200/201 を返す。失敗はステータスコードを返す（-1 はSecrets不足）
+    - 成功: 200/201 を返す。失敗はステータスコード（-1 はSecrets不足）
     """
     # Secrets チェック
     required_keys = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PATH"]
@@ -93,7 +101,7 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
 
     headers = {
-        "Authorization": f"token {token}",                # fine-grained / classic ともにOK
+        "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "streamlit-app",
@@ -132,7 +140,7 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> int:
             st.error("403 Forbidden: 権限不足 / 組織側のPAT承認未完了 / ブランチ保護で拒否。"
                      "→ PAT権限『Contents: Read and write』、Org承認、保存用ブランチの利用を確認。")
         elif put.status_code == 404:
-            st.error("404 Not Found: OWNER/REPO/PATH/BRANCH のいずれかが不一致。→ Secretsの値と実URL/パスを再確認。")
+            st.error("404 Not Found: OWNER/REPO/PATH/BRANCH の不一致。→ Secretsの値と実URL/パスを再確認。")
         elif put.status_code == 422:
             st.error("422 Unprocessable: 他のユーザーが先に更新（sha不一致など）。最新データを読み込んで再操作してください。")
             st.cache_data.clear()
@@ -170,15 +178,18 @@ df_by_id = df.set_index("ID")
 # ===== ページ冒頭で自動保存（dirty が立っていれば） =====
 autosave_if_needed(df)
 
-# ===== サイドバー・フィルター（ここは残す） =====
+# ===== サイドバー・フィルター（常時表示） =====
 st.sidebar.header("フィルター")
+
 status_options = ["すべて"] + sorted(df["対応状況"].dropna().unique().tolist())
 status_sel = st.sidebar.selectbox("対応状況", status_options)
+
 assignees = sorted(df["更新者"].dropna().unique().tolist())
 assignee_sel = st.sidebar.multiselect("担当者", assignees)
+
 kw = st.sidebar.text_input("キーワード（更新日/タスク/備考/次アクション）")
 
-# ===== フィルター適用 =====
+# ===== フィルター適用（view_df を作る） =====
 view_df = df.copy()
 if status_sel != "すべて":
     view_df = view_df[view_df["対応状況"] == status_sel]
@@ -211,13 +222,13 @@ col2.metric("対応中", int(status_counts.get("対応中", 0)))
 col3.metric("クローズ", int(status_counts.get("クローズ", 0)))
 col4.metric("返信待ち系", reply_count)
 
-# ===== 一覧 =====
+# ===== 一覧（view_df を表示） =====
 st.subheader("一覧")
 st.dataframe(view_df.sort_values("更新日", ascending=False), use_container_width=True)
 
 # ===== クローズ候補 =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
-threshold_date = today_jst() - pd.Timedelta(days=7)  # “日付”で比較
+threshold_date = today_jst() - pd.Timedelta(days=7)
 in_progress = df[df["対応状況"].str.contains("対応中", na=False)]
 reply_df = df[reply_mask]
 closing_candidates = in_progress[in_progress.index.isin(reply_df.index)]
@@ -238,7 +249,6 @@ else:
     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
         df.loc[df["ID"].isin(to_close_ids), "更新日"] = pd.Timestamp(today_jst())
-        # 自動保存フラグだけ立てる → 冒頭で保存が走る
         st.session_state["dirty"] = True
         st.success(f"{len(to_close_ids)}件をクローズに更新しました。")
         st.rerun()
@@ -251,7 +261,6 @@ with st.form("add"):
     updated = c2.date_input("更新日", today_jst())
     status = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
     task = st.text_input("タスク（件名）")
-    # 担当者候補（必要なら固定リストに）
     ass_choices = sorted(set(df["更新者"].tolist() + ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"]))
     assignee = st.selectbox("更新者（担当）", options=ass_choices)
     next_action = st.text_area("次アクション")
@@ -369,8 +378,8 @@ with st.expander("GitHub保存の診断（必要なときだけ開く）", expan
         save_to_github_csv(debug=True)
 
     if manual_backup:
-        save_tasks_locally(df)          # 念のためローカルへ
-        save_to_github_csv(debug=False) # 通常のコミット
+        save_tasks_locally(df)
+        save_to_github_csv(debug=False)
         st.success("バックアップ完了（GitHubへ保存しました）。")
 
     st.caption(f"Secrets keys（値は表示しません）: {list(st.secrets.keys())}")
