@@ -3,11 +3,11 @@
 #   直保存方式／日付の自動起票／列名の正規化／サイドバー・フィルター常時表示／診断エクスパンダ／コミット名入り）
 # --------------------------------------------------------------------------------------
 # 操作（追加／編集／削除／クローズ）後に
-#   1) ローカル保存 → 2) GitHubコミット → 3) キャッシュクリア → 4) rerun
+#   1) 欠損補完 → 2) ローカル保存 → 3) GitHubコミット → 4) キャッシュクリア → 5) rerun
 # をその場で実行して更新漏れを防止。
-# 「更新する」を押すと更新日は“いま（JST）”を自動起票。
-# 既存行の起票日が欠損なら編集/クローズ時に“いま（JST）”で自動補完。
-# 列名のズレ（例：起票/作成日/最終更新/更新 等）を正規化して「起票日」「更新日」に揃える。
+# 「更新する」を押すと更新日は“いま（JST）”を必ず自動起票。
+# 既存行の起票日が欠損なら編集/クローズ/追加時に“いま（JST）”で自動補完、保存直前にも安全弁で補完。
+# 列名のズレ（起票/作成日/最終更新/更新 等）を正規化して「起票日」「更新日」に揃える。
 # サイドバーは initial_sidebar_state="expanded" で常時展開。
 # 診断はメイン側エクスパンダ（必要時のみ）。
 # コミットメッセージに [user:◯◯] を付与（サイドバー入力 or Secrets）。
@@ -33,15 +33,12 @@ st.title("タスク管理ボード（自動保存）")
 JST = ZoneInfo("Asia/Tokyo")
 def now_jst() -> datetime:
     return datetime.now(JST)
-
 def today_jst():
     return now_jst().date()
-
-# JST の「いま」を Pandas Timestamp で返す（起票/更新日に使用）
 def jst_now_ts() -> pd.Timestamp:
     return pd.Timestamp(now_jst())
 
-# 欠損（None/""/"None"/"NaT"/NaN）を一括判定
+# ===== 欠損・列名ユーティリティ =====
 def is_missing(v) -> bool:
     if v is None:
         return True
@@ -53,11 +50,9 @@ def is_missing(v) -> bool:
     except Exception:
         return False
 
-# 列名の正規化：前後スペース/全角スペース/別名をすべて“正しい列名”へ揃える
 def canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # 全角スペース → 半角、strip
+    """前後スペース/全角スペース/別名を正規化して正式名に統一"""
     df.columns = [c.replace("\u3000", " ").strip() for c in df.columns]
-    # よくある別名 → 正式名へ統一
     alias_map = {
         "起票": "起票日",
         "作成日": "起票日",
@@ -66,23 +61,28 @@ def canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         "更新": "更新日",
         "update": "更新日",
     }
-    # 既存列に含まれる別名のみ置換
     df.rename(columns={k: v for k, v in alias_map.items() if k in df.columns}, inplace=True)
+    return df
+
+def enforce_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """保存前の安全弁：列名正規化→datetime化→起票/更新の欠損を“いま”で補完"""
+    df = canonicalize_columns(df).copy()
+    for col in ["起票日", "更新日"]:
+        df[col] = pd.to_datetime(df[col], errors="coerce")
+    now_ts = jst_now_ts()
+    df.loc[df["起票日"].isna(), "起票日"] = now_ts
+    df.loc[df["更新日"].isna(), "更新日"] = now_ts
     return df
 
 # ===== CSV設定 =====
 CSV_PATH = "tasks.csv"
-MANDATORY_COLS = [
-    "ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース",
-]
+MANDATORY_COLS = ["ID","起票日","更新日","タスク","対応状況","更新者","次アクション","備考","ソース"]
 
-# ===== ユーティリティ =====
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     # 必須列が無ければ追加
     for col in MANDATORY_COLS:
         if col not in df.columns:
             df[col] = ""
-
     # ID 正規化（空/重複を必ず解消）
     df["ID"] = df["ID"].astype(str).replace({"nan": ""})
     mask_empty = df["ID"].str.strip().eq("")
@@ -91,15 +91,12 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     dup_mask = df["ID"].duplicated(keep="first")
     if dup_mask.any():
         df.loc[dup_mask, "ID"] = [str(uuid.uuid4()) for _ in range(dup_mask.sum())]
-
     # 日付型（NaT許容）
     for col in ["起票日", "更新日"]:
         df[col] = pd.to_datetime(df[col], errors="coerce")
-
     # 文字列列
-    for col in ["タスク", "対応状況", "更新者", "次アクション", "備考", "ソース"]:
+    for col in ["タスク","対応状況","更新者","次アクション","備考","ソース"]:
         df[col] = df[col].astype(str)
-
     return df.reset_index(drop=True)
 
 @st.cache_data(ttl=30)
@@ -109,13 +106,11 @@ def load_tasks() -> pd.DataFrame:
         df = pd.read_csv(CSV_PATH, encoding="utf-8-sig")
     except FileNotFoundError:
         df = pd.DataFrame(columns=MANDATORY_COLS)
-
-    # 列名を正規化 → 型整備・欠損解消
     df = canonicalize_columns(df)
     return _normalize_df(df)
 
 # === 保存時のフォーマット設定（時刻まで保存したいなら True に変更） ===
-SAVE_WITH_TIME = False  # False: "YYYY-MM-DD" で保存 / True: "YYYY-MM-DD HH:MM:SS" で保存
+SAVE_WITH_TIME = False  # False: "YYYY-MM-DD" / True: "YYYY-MM-DD HH:MM:SS"
 
 def save_tasks_locally(df: pd.DataFrame):
     """CSV へ保存（SAVE_WITH_TIME に応じて日付のみ or 時刻まで保存）"""
@@ -132,7 +127,6 @@ commit_user_in = st.sidebar.text_input(
     value=st.session_state.get("commit_user", st.secrets.get("COMMIT_USER", "")),
 )
 st.session_state["commit_user"] = commit_user_in.strip()
-
 def get_commit_user() -> str:
     """優先順：サイドバー入力 > Secrets(COMMIT_USER) > 空文字"""
     return (st.session_state.get("commit_user") or st.secrets.get("COMMIT_USER", "")).strip()
@@ -143,12 +137,12 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False, commit_u
     ローカルCSVを GitHub の指定パスへコミット保存。
     - 直前 GET の sha をPUT payloadに含めて競合検知（他ユーザー更新 → 422）
     - コミットメッセージ先頭に [user:◯◯] を付与（commit_user）
-    - action は "Add"/"Edit"/"Delete"/"Close"/"Diagnose" など
+    - action は "Add"/"Edit"/"Delete"/"Close"/"Diagnose" 等
     - 成功: 200/201 を返す。失敗はステータスコード（-1 はSecrets不足）
     """
-    required_keys = ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO", "GITHUB_PATH"]
+    required_keys = ["GITHUB_TOKEN","GITHUB_OWNER","GITHUB_REPO","GITHUB_PATH"]
     missing = [k for k in required_keys if k not in st.secrets]
-    branch = st.secrets.get("GITHUB_BRANCH", "main")
+    branch = st.secrets.get("GITHUB_BRANCH","main")
     if missing:
         st.error(f"Secrets が不足しています: {missing}（Manage app → Settings → Secrets を確認）")
         return -1
@@ -158,7 +152,6 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False, commit_u
     repo  = st.secrets["GITHUB_REPO"]
     path  = st.secrets["GITHUB_PATH"]
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
@@ -183,46 +176,46 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False, commit_u
             "message": message,
             "content": content_b64,
             "branch": branch,
-            # 任意：author/committer を指定（環境により無視されることあり）
+            # 任意：author/committer の明示（環境により無視されることあり）
             # "author":   {"name": commit_user or "TaskBoard", "email": "noreply@example.com"},
             # "committer":{"name": commit_user or "TaskBoard", "email": "noreply@example.com"},
         }
         if sha:
-            payload["sha"] = sha
+            payload["sha"] = sha  # 既存更新時は必須（競合検知にも使う）
 
         put = requests.put(url, headers=headers, json=payload, timeout=20)
         if debug:
             st.write({"PUT_status": put.status_code, "PUT_text": put.text[:500]})
 
         if put.status_code in (200, 201):
-            pass  # 成功
+            pass
         elif put.status_code == 401:
             st.error("401 Unauthorized: トークンが無効（期限切れ／Revoke）。→ 新しいPATをSecretsへ。")
         elif put.status_code == 403:
-            st.error("403 Forbidden: 権限不足 / 組織側のPAT承認未完了 / ブランチ保護で拒否。"
-                     "→ PAT権限『Contents: Read and write』、Org承認、保存用ブランチの利用を確認。")
+            st.error("403 Forbidden: 権限不足 / 組織側のPAT承認未完了 / ブランチ保護で拒否。→ 権限『Contents: Read and write』／Org承認／保存用ブランチを確認。")
         elif put.status_code == 404:
             st.error("404 Not Found: OWNER/REPO/PATH/BRANCH の不一致。→ Secretsの値と実URL/パスを再確認。")
         elif put.status_code == 422:
-            st.error("422 Unprocessable: 他のユーザーが先に更新（sha不一致など）。最新データを読み込んで再操作してください。")
+            st.error("422 Unprocessable: 他ユーザーが先に更新（sha不一致）。最新データを読み込み直して再操作してください。")
         else:
             st.error(f"GitHub保存失敗: {put.status_code} {put.text[:300]}")
-
         return put.status_code
 
     except Exception as e:
         st.error(f"GitHub保存中に例外: {e}")
         return -1
 
-# ===== 保存＆確認（直保存ヘルパー） =====
+# ===== 保存＆確認（直保存ヘルパー：欠損補完→保存→コミット） =====
 def save_then_confirm_commit(df: pd.DataFrame, *, show_toast: bool = True, action: str = "Update") -> bool:
     """
-    1) ローカルCSVへ保存
-    2) GitHubへコミット（コミット名・操作種類付き）
-    3) 成功(200/201)ならキャッシュクリア
+    1) enforce_dates で起票/更新の欠損を“いま”で補完
+    2) ローカルCSVへ保存
+    3) GitHubへコミット（コミット名・操作種類付き）
+    4) 成功(200/201)ならキャッシュクリア
     """
     try:
-        save_tasks_locally(df)
+        df_fixed = enforce_dates(df)
+        save_tasks_locally(df_fixed)
         commit_user = get_commit_user()
         status = save_to_github_csv(debug=False, commit_user=commit_user, action=action)
         if status in (200, 201):
@@ -239,7 +232,7 @@ def save_then_confirm_commit(df: pd.DataFrame, *, show_toast: bool = True, actio
 
 # ===== データ読み込み =====
 df = load_tasks()
-df = canonicalize_columns(df)   # 念のため二度がけ（CSV書式が揺れても吸収）
+df = canonicalize_columns(df)  # 念のため二度がけ（CSVの揺れを吸収）
 df_by_id = df.set_index("ID")
 
 # ===== サイドバー・フィルター（常時表示） =====
@@ -270,7 +263,7 @@ st.subheader("サマリー")
 total = len(df)
 status_counts = df["対応状況"].value_counts()
 reply_mask = pd.Series(False, index=df.index)
-for k in ["返信待ち", "返信無し", "返信なし", "返信ない", "催促"]:
+for k in ["返信待ち","返信無し","返信なし","返信ない","催促"]:
     reply_mask = (
         reply_mask
         | df["次アクション"].str.contains(k, na=False)
@@ -308,13 +301,11 @@ else:
                                 f'{df_by_id.loc[_id,"更新日"].strftime("%Y-%m-%d") if pd.notnull(df_by_id.loc[_id,"更新日"]) else "-"}'
     )
     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
-        # 起票日が欠損の行は「いま（JST）」で自動補完
+        # 起票日が欠損の行は“いま（JST）”で自動補完
         mask_missing_created = df["ID"].isin(to_close_ids) & df["起票日"].apply(is_missing)
         df.loc[mask_missing_created, "起票日"] = jst_now_ts()
-
-        df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
+        # 更新日は“いま”
         df.loc[df["ID"].isin(to_close_ids), "更新日"] = jst_now_ts()
-
         ok = save_then_confirm_commit(df, action=f"Close {len(to_close_ids)} items")
         if ok:
             st.success(f"{len(to_close_ids)}件をクローズに更新しました。（起票/更新 自動／GitHubへ保存完了）")
@@ -324,23 +315,21 @@ else:
 st.subheader("新規タスク追加（保存は自動）")
 with st.form("add"):
     c1, c2, c3 = st.columns(3)
-    created = c1.date_input("起票日", today_jst())  # ユーザー選択。未選択なら自動で「いま」
-    status_sel_add = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
+    created = c1.date_input("起票日", today_jst())  # 未選択なら自動で“いま”
+    status_sel_add = c3.selectbox("対応状況", ["未対応","対応中","クローズ"], index=1)
     task = st.text_input("タスク（件名）")
-    ass_choices = sorted(set(df["更新者"].tolist() + ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"]))
+    ass_choices = sorted(set(df["更新者"].tolist() + ["都筑","二上","三平","成瀬","柿野","花田","武藤","島浦"]))
     assignee = st.selectbox("更新者（担当）", options=ass_choices)
     next_action = st.text_area("次アクション")
     notes = st.text_area("備考")
     source = st.text_input("ソース（ID/リンクなど）")
     submitted = st.form_submit_button("追加", type="primary")
     if submitted:
-        # 起票日はフォームの値／欠損なら「いま」
         created_ts = pd.Timestamp(created) if not is_missing(created) else jst_now_ts()
-
         new_row = {
             "ID": str(uuid.uuid4()),
             "起票日": created_ts,
-            "更新日": jst_now_ts(),  # 追加時は「いま」を自動起票
+            "更新日": jst_now_ts(),  # 追加時も “いま”
             "タスク": task,
             "対応状況": status_sel_add,
             "更新者": assignee,
@@ -376,12 +365,12 @@ else:
         c1, c2, c3 = st.columns(3)
         task_e = c1.text_input("タスク（件名）", df_by_id.loc[choice_id, "タスク"], key=f"task_{choice_id}")
         status_e = c2.selectbox(
-            "対応状況", ["未対応", "対応中", "クローズ"],
+            "対応状況", ["未対応","対応中","クローズ"],
             index=(["未対応","対応中","クローズ"].index(df_by_id.loc[choice_id,"対応状況"])
                    if df_by_id.loc[choice_id,"対応状況"] in ["未対応","対応中","クローズ"] else 1),
             key=f"status_{choice_id}"
         )
-        ass_choices_e = sorted(set(df["更新者"].tolist() + ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"]))
+        ass_choices_e = sorted(set(df["更新者"].tolist() + ["都筑","二上","三平","成瀬","柿野","花田","武藤","島浦"]))
         default_assignee = df_by_id.loc[choice_id, "更新者"]
         ass_index = ass_choices_e.index(default_assignee) if default_assignee in ass_choices_e else 0
         assignee_e = c3.selectbox("更新者（担当）", options=ass_choices_e, index=ass_index, key=f"assignee_{choice_id}")
@@ -404,13 +393,11 @@ else:
         df.loc[df["ID"] == choice_id, ["タスク","対応状況","更新者","次アクション","備考","ソース"]] = [
             task_e, status_e, assignee_e, next_action_e, notes_e, source_e
         ]
-
-        # 起票日が欠損なら「いま（JST）」で自動補完
+        # 起票日が欠損なら“いま（JST）”
         current_created = df_by_id.loc[choice_id, "起票日"] if choice_id in df_by_id.index else None
         if is_missing(current_created):
             df.loc[df["ID"] == choice_id, "起票日"] = jst_now_ts()
-
-        # 更新日は「いま（JST）」へ自動起票
+        # 更新日は“いま（JST）”
         df.loc[df["ID"] == choice_id, "更新日"] = jst_now_ts()
 
         short_title = str(task_e).strip()[:60]
@@ -449,13 +436,14 @@ if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
     else:
         st.error("確認ワードが正しくありません。`DELETE` と入力してください。")
 
-# ===== 診断（必要時のみ開く：メインエリアに配置） =====
-with st.expander("GitHub保存の診断（必要なときだけ開く）", expanded=False):
-    st.write("GitHub API へのアクセス状況（GET/PUT）と短い応答本文を表示します。問題の切り分けに使います。")
+# ===== 診断＆CSV修復（メインエリアのエクスパンダ） =====
+with st.expander("GitHub保存の診断／CSV修復（必要なときだけ開く）", expanded=False):
+    st.write("GitHub API へのアクセス状況（GET/PUT）と短い応答本文を表示。列名の正規化＆起票/更新の欠損補完の修復も可能。")
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     run_getput = c1.button("診断を実行（GET/PUT）")
     manual_backup = c2.button("手動バックアップ（最新CSVをコミット）")
+    repair_csv = c3.button("CSV修復（列名正規化＋起票/更新の欠損補完）")
 
     if run_getput:
         _ = save_to_github_csv(
@@ -468,6 +456,14 @@ with st.expander("GitHub保存の診断（必要なときだけ開く）", expan
         ok = save_then_confirm_commit(df, show_toast=False, action="Manual backup")
         if ok:
             st.success("バックアップ完了（GitHubへ保存しました）。")
+
+    if repair_csv:
+        df_fix = load_tasks()
+        df_fix = enforce_dates(df_fix)
+        ok = save_then_confirm_commit(df_fix, show_toast=False, action="Repair CSV")
+        if ok:
+            st.success("CSVを修復しました。（GitHubへ保存完了）")
+        st.rerun()
 
     st.caption(f"Secrets keys（値は表示しません）: {list(st.secrets.keys())}")
 
