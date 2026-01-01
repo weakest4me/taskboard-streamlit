@@ -13,13 +13,13 @@ import requests
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
     AGGRID_AVAILABLE = True
-except Exception as e:
+except Exception:
     AGGRID_AVAILABLE = False
 
 # ===== タイムゾーン・ヘルパー =====
 JST = ZoneInfo("Asia/Tokyo")
 
-SAVE_WITH_TIME = bool(st.secrets.get("SAVE_WITH_TIME", True))  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
+SAVE_WITH_TIME = bool(st.secrets.get("SAVE_WITH_TIME", True))
 
 def now_jst() -> datetime:
     return datetime.now(JST)
@@ -32,15 +32,14 @@ def today_jst() -> date:
     return now_jst().date()
 
 # ===== ページ設定 =====
-st.set_page_config(page_title="タスク管理ボード（AgGrid版 完全）", layout="wide")
-st.title("タスク管理ボード — AgGrid版（行クリックで編集）\n起票日は自動・編集不可／更新者はプルダウン／欠損補完／GitHub保存")
+st.set_page_config(page_title="タスク管理ボード（AgGrid版 修正版）", layout="wide")
+st.title("タスク管理ボード — AgGrid版（行クリックで編集・選択安全化）")
 
 CSV_PATH = st.secrets.get("CSV_PATH", "tasks.csv")
 MANDATORY_COLS = [
     "ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース",
 ]
 
-# ===== ユーティリティ =====
 MISSING_SET = {"", "none", "null", "nan", "na", "n/a", "-", "—"}
 
 def _ensure_str(x) -> str:
@@ -51,21 +50,17 @@ def _is_missing(x) -> bool:
     return s in MISSING_SET
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    # 列名の単純正規化（全角スペース→半角、前後空白除去）
     df.columns = [c.replace("\u3000", " ").strip() for c in df.columns]
-    # よくある別名の統一
     rename_map = {
         "更新": "更新日", "最終更新": "更新日", "起票": "起票日", "作成日": "起票日",
         "担当": "更新者", "担当者": "更新者"
     }
     df.columns = [rename_map.get(c, c) for c in df.columns]
 
-    # 必須列の追加
     for col in MANDATORY_COLS:
         if col not in df.columns:
             df[col] = ""
 
-    # ID 正規化（空/重複を必ず解消）
     df["ID"] = df["ID"].astype(str).replace({"nan": "", "None": ""})
     mask_empty = df["ID"].str.strip().eq("")
     if mask_empty.any():
@@ -74,12 +69,10 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     if dup_mask.any():
         df.loc[dup_mask, "ID"] = [str(uuid.uuid4()) for _ in range(dup_mask.sum())]
 
-    # 文字列列の正規化
     str_cols = ["タスク", "対応状況", "更新者", "次アクション", "備考", "ソース"]
     for col in str_cols:
         df[col] = df[col].apply(lambda x: "" if _is_missing(x) else _ensure_str(x))
 
-    # 日付列（NaTを許容）
     for col in ["起票日", "更新日"]:
         df[col] = pd.to_datetime(df[col], errors="coerce")
 
@@ -92,13 +85,12 @@ def load_tasks() -> pd.DataFrame:
     except FileNotFoundError:
         df = pd.DataFrame(columns=MANDATORY_COLS)
     df = _normalize_df(df)
-    # 読み込み直後に安全弁（欠損日付は“いま”で補完）
     df = safety_autofill_all(df)
     return df
 
 def _format_date_for_save(dt: pd.Timestamp) -> str:
     if pd.isna(dt):
-        return now_jst_str()  # 欠損は“いま”
+        return now_jst_str()
     if SAVE_WITH_TIME:
         return pd.to_datetime(dt).strftime("%Y-%m-%d %H:%M:%S")
     else:
@@ -106,7 +98,6 @@ def _format_date_for_save(dt: pd.Timestamp) -> str:
 
 
 def save_tasks(df: pd.DataFrame):
-    """保存前に安全弁をかけ、CSVへ書き出し"""
     df_out = safety_autofill_all(df.copy())
     for col in ["起票日", "更新日"]:
         df_out[col] = df_out[col].apply(lambda x: _format_date_for_save(pd.to_datetime(x, errors="coerce")))
@@ -116,9 +107,7 @@ def save_tasks(df: pd.DataFrame):
 
 def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
     now_ts = pd.Timestamp(now_jst())
-    # 起票日は欠損のみ補完（既存起票日は維持）
     df["起票日"] = df["起票日"].apply(lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce"))
-    # 更新日は欠損なら補完（編集/クローズ時は別途上書き）
     df["更新日"] = df["更新日"].apply(lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce"))
     return df
 
@@ -244,11 +233,10 @@ if AGGRID_AVAILABLE:
     gb = GridOptionsBuilder.from_dataframe(disp)
     gb.configure_selection(selection_mode="single", use_checkbox=False)
     gb.configure_grid_options(enableSorting=True, enableFilter=True, rowSelection="single")
-    # 列幅やテキスト折り返しなどの好み設定（任意）
     gb.configure_default_column(flex=1, wrapText=True, autoHeight=True)
     grid_options = gb.build()
 
-    grid = AgGrid(
+    grid_ret = AgGrid(
         disp.sort_values("更新日", ascending=False),
         gridOptions=grid_options,
         height=520,
@@ -256,14 +244,20 @@ if AGGRID_AVAILABLE:
         allow_unsafe_jscode=True,
         theme="balham",
     )
-    rows = grid.get("selected_rows", [])
-    selected_id = rows[0]["ID"] if rows else None
+    rows = grid_ret.get("selected_rows")
+    # ★ DataFrame と list の両対応（Cloud のバージョン差異を吸収）
+    if isinstance(rows, pd.DataFrame):
+        selected_id = rows.iloc[0]["ID"] if not rows.empty else None
+    elif isinstance(rows, list):
+        selected_id = rows[0].get("ID") if rows else None
+    else:
+        selected_id = None
 else:
-    st.warning("AgGrid が未導入です。ターミナルで `pip install streamlit-aggrid` を実行してください。\n一時的に標準の表を表示します。")
+    st.warning("AgGrid が未導入です。`pip install streamlit-aggrid` を実行してください。標準表で代替表示します。")
     st.dataframe(disp.sort_values("更新日", ascending=False), use_container_width=True)
 
 # ===== クローズ候補（.dtエラー対策版） =====
-st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
+st.subheader("クローズ候補（対応中＆返信待ち系、更新が7日以上前）")
 threshold_date = today_jst() - pd.Timedelta(days=7)
 threshold_dt = pd.Timestamp(threshold_date)
 
@@ -365,7 +359,6 @@ else:
         key="selected_id",
     )
 
-    # URLとセッションに維持（共有や再訪がしやすい）
     try:
         if hasattr(st, "query_params"):
             st.query_params["id"] = choice_id
@@ -415,7 +408,7 @@ else:
         df.loc[df["ID"] == choice_id, ["タスク","対応状況","更新者","次アクション","備考","ソース"]] = [
             task_e, status_e, assignee_e, next_action_e, notes_e, source_e
         ]
-        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(now_jst())  # “いま”
+        df.loc[df["ID"] == choice_id, "更新日"] = pd.Timestamp(now_jst())
         save_tasks(df)
         save_to_github_csv(debug=False)
         st.success("タスクを更新しました（更新日はJSTの“いま”）。")
@@ -463,4 +456,4 @@ if colB.button("GitHub保存の診断"):
 st.sidebar.caption(f"Secrets keys: {list(st.secrets.keys())}")
 
 # ===== フッター =====
-st.caption("※ AgGridの行クリックで編集対象を選択できます。起票日は新規作成時のみ自動セット、以後は編集不可（既存値維持）。更新日は編集/クローズ操作でJSTの“いま”に自動更新。GitHub連携はGET→PUTで保存します。")
+st.caption("※ 行クリックで選択したIDを安全に取得するよう修正済み。起票日は新規作成時のみ自動セット、以後は編集不可。更新者はプルダウン。GitHub連携はGET→PUTで保存します。")
