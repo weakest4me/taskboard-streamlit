@@ -81,7 +81,6 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 @st.cache_data(ttl=30)
 def load_tasks() -> pd.DataFrame:
     try:
-        # NaNを作らないように dtype=str, keep_default_na=False
         df = pd.read_csv(CSV_PATH, encoding="utf-8-sig", dtype=str, keep_default_na=False)
     except FileNotFoundError:
         df = pd.DataFrame(columns=MANDATORY_COLS)
@@ -94,7 +93,6 @@ def _format_date_for_save(dt: pd.Timestamp) -> str:
     if pd.isna(dt):
         return now_jst_str()  # 欠損は“いま”
     if SAVE_WITH_TIME:
-        # 時刻が欠損なら 00:00:00 にならないように日付に 00:00:00 を明示する
         return pd.to_datetime(dt).strftime("%Y-%m-%d %H:%M:%S")
     else:
         return pd.to_datetime(dt).strftime("%Y-%m-%d")
@@ -168,7 +166,7 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False):
             st.error("401 Unauthorized: トークン無効。新しいPATをSecretsへ。")
         elif put.status_code == 403:
             st.error("403 Forbidden: 権限不足/保護ルール。PAT権限『Contents: Read and write』やブランチ保護を確認。")
-        elif put.status_code == 404:
+        elif put_status == 404:
             st.error("404 Not Found: OWNER/REPO/PATH/BRANCH を再確認。")
         elif put.status_code == 422:
             st.error("422 Unprocessable: SHA不正 or ブランチ保護。最新を取得して再保存してください。")
@@ -234,15 +232,22 @@ disp["起票日"] = disp["起票日"].apply(_fmt_display)
 disp["更新日"] = disp["更新日"].apply(_fmt_display)
 st.dataframe(disp.sort_values("更新日", ascending=False), use_container_width=True)
 
-# ===== クローズ候補 =====
+# ===== クローズ候補（.dtエラー対策版） =====
 st.subheader("クローズ候補（ルール: 対応中かつ返信待ち系、更新が7日以上前）")
-threshold_date = today_jst() - pd.Timedelta(days=7)
+threshold_date = today_jst() - pd.Timedelta(days=7)         # date型の閾値
+threshold_dt = pd.Timestamp(threshold_date)                  # datetimeへ統一
 
 in_progress = df[df["対応状況"].str.contains("対応中", na=False)]
 reply_df = df[reply_mask]
 closing_candidates = in_progress[in_progress.index.isin(reply_df.index)]
+
+# ★ ここで更新日を必ず datetime に正規化
+closing_candidates = closing_candidates.copy()
+closing_candidates["更新日"] = pd.to_datetime(closing_candidates["更新日"], errors="coerce")
+
+# ★ .dt を使わず、datetime 比較でフィルタ
 closing_candidates = closing_candidates[
-    closing_candidates["更新日"].notna() & (closing_candidates["更新日"].dt.date < threshold_date)
+    closing_candidates["更新日"].notna() & (closing_candidates["更新日"] < threshold_dt)
 ]
 
 if closing_candidates.empty:
@@ -256,8 +261,7 @@ else:
     to_close_ids = st.multiselect(
         "クローズするタスク（複数選択可）",
         closing_candidates["ID"].tolist(),
-        format_func=lambda _id: f'{df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / '
-                                f'{_fmt_display(df_by_id.loc[_id,"更新日"]) }'
+        format_func=lambda _id: f'{df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}'
     )
     if st.button("選択したタスクをクローズに更新", type="primary", disabled=(len(to_close_ids) == 0)):
         df.loc[df["ID"].isin(to_close_ids), "対応状況"] = "クローズ"
@@ -272,7 +276,6 @@ else:
 st.subheader("新規タスク追加（起票日/更新日は自動でJSTの“いま”）")
 with st.form("add"):
     c1, c2, c3 = st.columns(3)
-    # 起票日・更新日は編集不可（自動表示のみ）
     c1.markdown(f"起票日: **{now_jst_str()}**")
     c2.markdown(f"更新日: **{now_jst_str()}**")
     status = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
@@ -316,8 +319,7 @@ else:
     choice_id = st.selectbox(
         "編集対象",
         options=df_by_id.index.tolist(),
-        format_func=lambda _id: f'[{df_by_id.loc[_id,"対応状況"]}] {df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / '
-                                f'{_fmt_display(df_by_id.loc[_id,"更新日"]) }',
+        format_func=lambda _id: f'[{df_by_id.loc[_id,"対応状況"]}] {df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}',
         key="selected_id",
     )
 
@@ -345,9 +347,8 @@ else:
         notes_e = st.text_area("備考", df_by_id.loc[choice_id, "備考"], key=f"notes_{choice_id}")
         source_e = st.text_input("ソース（ID/リンクなど）", df_by_id.loc[choice_id, "ソース"], key=f"source_{choice_id}")
 
-        # 起票日は編集不可（表示のみ）／更新日は更新時に自動で“いま”へ
         st.caption(
-            f"起票日: { _fmt_display(df_by_id.loc[choice_id, '起票日']) } / 最終更新: { _fmt_display(df_by_id.loc[choice_id, '更新日']) }"
+            f"起票日: {_fmt_display(df_by_id.loc[choice_id, '起票日'])} / 最終更新: {_fmt_display(df_by_id.loc[choice_id, '更新日'])}"
         )
 
         col_ok, col_spacer, col_del = st.columns([1, 1, 1])
@@ -359,7 +360,6 @@ else:
         delete_btn = col_del.form_submit_button("このタスクを削除", type="secondary")
 
     if submit_edit:
-        # 値の更新（起票日は編集不可：既存値を維持）
         df.loc[df["ID"] == choice_id, ["タスク","対応状況","更新者","次アクション","備考","ソース"]] = [
             task_e, status_e, assignee_e, next_action_e, notes_e, source_e
         ]
@@ -387,8 +387,7 @@ st.subheader("一括削除（複数選択）")
 del_targets = st.multiselect(
     "削除したいタスク（複数選択）",
     options=view_df["ID"].tolist(),
-    format_func=lambda _id: f'{df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / '
-                            f'{_fmt_display(df_by_id.loc[_id,"更新日"]) }'
+    format_func=lambda _id: f'{df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}'
 )
 confirm_word_bulk = st.text_input("確認ワード（DELETE と入力）", value="", key="confirm_bulk")
 if st.button("選択タスクを削除", disabled=(len(del_targets) == 0)):
