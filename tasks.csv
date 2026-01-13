@@ -968,3 +968,47 @@ NHK-WANの機器はboxフォルダ内にある91_ラック実装図に資料が�
 2026-01-11 02:23:29,2026-01-11 02:23:29,[inoc:9932] 【長野局】ソフトバンクからのメーリングリストによるメール受信について,未対応,柿野,,,,724dad97-ef43-4b73-9747-dd456d7700ce
 2026-01-11 02:23:57,2026-01-11 07:33:57,[inoc:9940] 【問い合わせ】新リモートアクセスでの字起こしシステムが利用できない,対応中,柿野,返信待ち。返信なければ一週間後クローズ,NHK内部システムの新リモアク運用については登録申請が必要な旨を回答。ただし登録申請は２月解禁のため一旦は現リモアクで対応してもらうよう案内。,,2a85c6a0-7900-4407-8b37-de088ad0f5e2
 2026-01-11 02:24:26,2026-01-11 07:56:00,[inoc:9947] 【新リモートアクセス】公開システム「イベントインフォメーション」の管理画面へのアクセスについて,未対応,柿野,豊田さんに確認,NHKの公開サイト(一般の人もアクセスできるシステム)であり切り分けとしてNHK内部システムか外部システムか判断付かないため確認お願いします。後段システムにないものなので外部システム扱いのような気はしますが…,,06a2d3d1-9c68-4162-9c9c-10bfc9c15767
+2026-01-13 19:25:54,2026-01-13 19:25:54,"AWS,Azure　検証Palo Alto FWのPCAP取得不可について",対応中,都筑,"返信待ち
+
+","Teamsにてやり取りSOCよりMGDに問合せてくれとの事で現在以下の内容をMGDに問合せ中
+【確認依頼】AWS・Azure 検証Palo Alto FWでPCAP取得不可について（ロール設定）
+お世話になっております。
+以下の事象についてご確認をお願いいたします。
+ 
+対象機器
+ 
+AWS
+・mgd-sit-jeaw-fw01（Palo Alto VM-Series on AWS）
+・mgd-sit-jeaw-fw02（Palo Alto VM-Series on AWS）
+・mgd-sot-jeaw-fw02（Palo Alto VM-Series on AWS）
+Azure
+・mgd-sit-jeaz-fw01（Palo Alto VM-Series on Azure）
+・mgd-sot-jeaz-fw02（Palo Alto VM-Series on Azure）
+ 
+発生事象
+・API経由、コンソール経由でのPCAP取得不可（403エラー）
+・発生日時：2026年1月9日
+※2025年12月上旬の作業時は取得可能でした
+ 
+影響範囲
+・一般権限アカウント（soc-ope-usr01～soc-ope-usr04、soc-ope-usr06、soc-ope-usr09～soc-ope-usr20）
+・高権限アカウント（soc-ope-usr05、soc-ope-usr07、soc-ope-usr08）は取得可能
+SBT調査結果
+・カスタムロール「soc-role」を継承している一般アカウントで権限不足
+・以下の権限がDisableになっていることを確認
+・Web UI ＞ Operations ＞ Download Pcap Files
+・XML API ＞ Export
+ 
+依頼事項
+・12月上旬以降にロール設定変更があったか確認
+・一般ユーザに「Device administrator(read-only)」相当のロールが外れていないか確認
+・必要に応じて、以下権限をEnableに設定
+・Web UI ＞ Operations ＞ Download Pcap Files
+・XML API ＞ Export
+・「Device administrator(read-only)」相当のロールを再付与
+ 
+背景
+ 
+・以前、カスタムシグネチャ作成のために高権限付与依頼を実施（soc-ope-usr05、07、08）
+・今回は同様の権限を一般アカウントにも適用する必要あり
+ ",,8a552c64-d5c3-4c49-9047-a2cfcbdf7c02
