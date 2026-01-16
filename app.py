@@ -1,30 +1,32 @@
 
 # -*- coding: utf-8 -*-
 """
-タスク管理ボード（完全版 / 複数人運用向け / タイムゾーン安全化 / UI大幅改善）
+タスク管理ボード（完全版 / 複数人運用向け / タイムゾーン安全化 / UI大幅改善 + 一覧の可読性強化）
 
-機能:
-- CSV 永続化 + GitHub 連携（SHA による楽観的ロック / 成否でUI分岐 / committer情報）
+機能要約:
+- CSV 永続化 + GitHub 連携（SHA 楽観的ロック / 成否でUI分岐 / committer情報）
 - 起票日は自動・編集不可、更新日は編集/クローズ時に自動更新（JST）
-- 簡易ログイン（Secrets の USERS によるトークン方式）
+- 簡易ログイン（Secrets USERS によるトークン方式）
 - 監査ログ（audit.csv）: 作成 / 更新 / 削除 / 一括削除 / クローズ を記録（任意で GitHub 保存）
-- フィルタ、一覧、クローズ候補抽出（対応中 + 返信待ち系 + 7日前より前の更新）
-- 手動リフレッシュボタン（最新反映）
-- UI 改善:
-  - タブ化（一覧 / クローズ候補 / 新規追加 / 編集・削除 / 一括削除）
-  - 一覧の書式統一（ColumnConfig: Datetime, Link, Text）
-  - ステータスを絵文字バッジ化、行の淡色ハイライト（返信待ちを黄で上書き）
-  - クイックフィルタ（横並びラジオ）/ 返信待ちトグル
-  - メトリクスに加えて棒グラフで全体感を可視化
-  - 軽い CSS（文字サイズ/行間）
+- 一覧フィルタ（サイドバー）＋ クイックフィルタ（ページ内）
+- クローズ候補抽出（対応中 & 返信待ち系 & 7日以上未更新）
+- メトリクス + 棒グラフ
+- UI改善（タブ化 / ColumnConfig 書式 / ステータス絵文字 / 軽CSS）
+- 一覧の可読性強化（本ファイルの新要素）
+  * セルの折り返し / 最適幅 / 行間拡大
+  * 左2列（対応状況/タスク）の固定（CSSベース）
+  * 表示モード切替：高速 or 行ハイライト or 行＋キーワード強調（Styler）
+  * 状態別（未対応/対応中/クローズ）＋返信待ちの淡色行ハイライト
+  * （任意）セル内のキーワード強調
 
 注意:
-- Secrets の SAVE_WITH_TIME は文字列でも正しく解釈されます（true/false/1/0/yes/no/on/off）。
-- GITHUB_* の設定が必要です。監査ログを GitHub に保存する場合は GITHUB_PATH_AUDIT も設定します。
+- Secrets の SAVE_WITH_TIME は "true/false/1/0/yes/no/on/off" を解釈。
+- GitHub 連携は GITHUB_* が必要。監査ログも保存するなら GITHUB_PATH_AUDIT を設定。
 """
 
 import uuid
 import base64
+import re
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
@@ -54,7 +56,7 @@ LOCK_PATH = st.secrets.get("LOCK_PATH", "locks.csv")  # 予約（将来用）
 LOCK_TTL_MIN = int(st.secrets.get("LOCK_TTL_MIN", 10))
 
 JST = ZoneInfo("Asia/Tokyo")
-SAVE_WITH_TIME = get_bool_secret("SAVE_WITH_TIME", True)  # True: YYYY-MM-DD HH:MM:SS / False: YYYY-MM-DD
+SAVE_WITH_TIME = get_bool_secret("SAVE_WITH_TIME", True)
 
 MANDATORY_COLS = [
     "ID", "起票日", "更新日", "タスク", "対応状況", "更新者", "次アクション", "備考", "ソース",
@@ -68,21 +70,59 @@ MISSING_SET = {"", "none", "null", "nan", "na", "n/a", "-", "—"}
 st.set_page_config(page_title="タスク管理ボード（完全版）", layout="wide")
 st.title("タスク管理ボード（完全版 / 起票日は自動・編集不可、更新者はプルダウン）")
 
-def inject_css():
+def inject_base_css():
+    """ベースの可読性向上（文字サイズ/行間・セル折り返し・行高）"""
     st.markdown(
         """
         <style>
-        /* DataFrameの文字サイズと行間の微調整 */
+        /* DataFrameの文字サイズ・行間 */
         .stDataFrame table { font-size: 0.95rem; }
         .st-emotion-cache-1gulkj5 p { line-height: 1.35; }
-        /* 見出しやラベルの視認性を少し上げる */
+
+        /* セルを折り返し可能に（一覧の長文対策） */
+        [data-testid="stDataFrame"] div[role="gridcell"] div {
+            white-space: normal !important;
+            line-height: 1.35;
+        }
+
+        /* 行高（読みやすい行間へ） */
+        [data-testid="stDataFrame"] table tbody tr td { padding-top: 10px; padding-bottom: 10px; }
+        [data-testid="stDataFrame"] table thead tr th { padding-top: 10px; padding-bottom: 10px; }
+
         .stMetric label { font-size: 0.9rem; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-inject_css()
+def inject_sticky_css(first_col_width_px: int = 110, second_col_offset_px: int = 110):
+    """
+    簡易的な左2列固定（対応状況/タスク）。CSS だけで実現（環境により効かない場合あり）。
+    first_col_width_px と second_col_offset_px は実表示に合わせて微調整可。
+    """
+    st.markdown(
+        f"""
+        <style>
+        /* 1列目（対応状況）を固定 */
+        [data-testid="stDataFrame"] table tbody tr td:nth-child(1),
+        [data-testid="stDataFrame"] table thead tr th:nth-child(1) {{
+            position: sticky; left: 0px; z-index: 3;
+            background: var(--background-color);
+        }}
+        /* 2列目（タスク）を固定 */
+        [data-testid="stDataFrame"] table tbody tr td:nth-child(2),
+        [data-testid="stDataFrame"] table thead tr th:nth-child(2) {{
+            position: sticky; left: {second_col_offset_px}px; z-index: 3;
+            background: var(--background-color);
+        }}
+        /* 1列目の幅を目安として指定（表ヘッダのレイアウトと合わせる） */
+        [data-testid="stDataFrame"] table thead tr th:nth-child(1) {{ min-width: {first_col_width_px}px; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+inject_base_css()
 
 # ==============================
 #       時刻ヘルパー
@@ -125,7 +165,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = ""
 
-    # ID 正規化（空/重複を必ず解消）
+    # ID 正規化（空/重複を解消）
     df["ID"] = df["ID"].astype(str).replace({"nan": "", "None": ""})
     mask_empty = df["ID"].str.strip().eq("")
     if mask_empty.any():
@@ -134,12 +174,11 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     if dup_mask.any():
         df.loc[dup_mask, "ID"] = [str(uuid.uuid4()) for _ in range(dup_mask.sum())]
 
-    # 文字列列の正規化（None/null/nanなどを空へ）
-    str_cols = ["タスク", "対応状況", "更新者", "次アクション", "備考", "ソース"]
-    for col in str_cols:
+    # 文字列列の正規化
+    for col in ["タスク", "対応状況", "更新者", "次アクション", "備考", "ソース"]:
         df[col] = df[col].apply(lambda x: "" if _is_missing(x) else _ensure_str(x))
 
-    # 日付列（NaTを許容）
+    # 日付列
     for col in ["起票日", "更新日"]:
         df[col] = pd.to_datetime(df[col], errors="coerce")
 
@@ -150,11 +189,11 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 # ==============================
 def safety_autofill_all(df: pd.DataFrame) -> pd.DataFrame:
     now_ts = pd.Timestamp(now_jst())
-    # 起票日は欠損のみ補完（既存起票日は維持）
+    # 起票日は欠損のみ補完
     df["起票日"] = df["起票日"].apply(
         lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce")
     )
-    # 更新日は欠損なら補完（編集/クローズ時は別途上書き）
+    # 更新日は欠損なら補完
     df["更新日"] = df["更新日"].apply(
         lambda x: now_ts if pd.isna(pd.to_datetime(x, errors="coerce")) else pd.to_datetime(x, errors="coerce")
     )
@@ -180,7 +219,6 @@ def load_tasks() -> pd.DataFrame:
     except FileNotFoundError:
         df = pd.DataFrame(columns=MANDATORY_COLS)
     df = _normalize_df(df)
-    # 読み込み直後に安全弁（欠損日付は“いま”で補完）
     df = safety_autofill_all(df)
     return df
 
@@ -215,7 +253,6 @@ def save_to_github_file(local_path: str, remote_path: str, commit_message: str, 
         "User-Agent": "streamlit-app",
     }
     try:
-        # 最新 sha を取得
         r = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
         if debug:
             st.write({"GET_status": r.status_code, "GET_text": r.text[:300]})
@@ -266,11 +303,10 @@ def save_to_github_csv(local_path: str = CSV_PATH, debug: bool = False) -> bool:
         return False
     return save_to_github_file(local_path, remote, "Update tasks.csv from Streamlit app", debug=debug)
 
-# 監査ログを GitHub にも保存（任意設定）
 def save_audit_to_github(debug: bool = False) -> bool:
     remote_audit = st.secrets.get("GITHUB_PATH_AUDIT")
     if not remote_audit:
-        return True  # 設定がなければ成功扱い
+        return True
     return save_to_github_file(AUDIT_PATH, remote_audit, "Update audit.csv from Streamlit app", debug=debug)
 
 # ==============================
@@ -294,93 +330,93 @@ def write_audit(action: str, task_id: str, before: dict, after: dict):
     save_audit_to_github(debug=False)
 
 # ==============================
-#       表示用ユーティリティ
+#       表示ユーティリティ
 # ==============================
 def status_badge(s: str) -> str:
-    mapping = {
-        "未対応": "⏳ 未対応",
-        "対応中": "🚧 対応中",
-        "クローズ": "✅ クローズ",
-    }
+    mapping = {"未対応": "⏳ 未対応", "対応中": "🚧 対応中", "クローズ": "✅ クローズ"}
     return mapping.get(str(s).strip(), str(s))
 
 def make_display_df(df: pd.DataFrame) -> pd.DataFrame:
-    """一覧表示用の軽整形（列順・リンク化・バッジ化・ソート）"""
+    """一覧表示用（列順・ステータス表記・URL整形・更新日降順）"""
     d = df.copy()
-
-    # ステータスを絵文字バッジ風に
     d["対応状況"] = d["対応状況"].apply(status_badge)
 
-    # URL を自動リンク化（http(s) 始まりのみ）
     def to_link(x: str) -> str:
         s = str(x).strip()
         return s if s.startswith("http://") or s.startswith("https://") else s
     d["ソース"] = d["ソース"].apply(to_link)
 
-    # 表示列の順序
-    col_order = ["対応状況", "タスク", "更新者", "次アクション", "備考", "起票日", "更新日", "ソース", "ID"]
-    for c in col_order:
-        if c not in d.columns:
-            d[c] = ""
-    d = d[col_order]
-
-    # 直近更新順（降順）
-    d = d.sort_values("更新日", ascending=False)
-
+    order = ["対応状況", "タスク", "更新者", "次アクション", "備考", "起票日", "更新日", "ソース", "ID"]
+    for c in order:
+        if c not in d.columns: d[c] = ""
+    d = d[order].sort_values("更新日", ascending=False)
     return d
 
-def style_rows(d: pd.DataFrame, reply_mask: pd.Series):
-    """行の淡色ハイライト（未対応=薄赤 / 対応中=薄青 / クローズ=薄緑 / 返信待ち=薄黄で上書き）"""
-    import numpy as np  # ここだけでimport（環境を汚さない）
-    base = d.copy()
+def style_rows(df_disp_like: pd.DataFrame, reply_mask: pd.Series):
+    """
+    状態（未対応/対応中/クローズ）＋返信待ちを淡色で行ハイライト。
+    df_disp_like: make_display_df() 後の列構成を想定（先頭列が対応状況）
+    """
+    import numpy as np
+    base = df_disp_like.copy()
     raw_status = base["対応状況"].astype(str)
     colors = np.full((len(base), len(base.columns)), "", dtype=object)
 
-    def paint_row(i, color):
-        colors[i, :] = f"background-color: {color}"
+    def paint_row(i, color): colors[i, :] = f"background-color: {color}"
 
     for i, s in enumerate(raw_status):
-        if "クローズ" in s:
-            paint_row(i, "#ECF8EC")         # 薄緑
-        elif "対応中" in s:
-            paint_row(i, "#EDF5FF")         # 薄青
-        elif "未対応" in s:
-            paint_row(i, "#FFF1F1")         # 薄赤
+        if "クローズ" in s: paint_row(i, "#ECF8EC")
+        elif "対応中" in s: paint_row(i, "#EDF5FF")
+        elif "未対応" in s: paint_row(i, "#FFF1F1")
 
-    # 返信待ちは優先（上から薄黄色で上書き）
     for i, wait in enumerate(reply_mask):
-        if bool(wait):
-            colors[i, :] = "background-color: #FFF7DB"  # 薄黄
+        if bool(wait): colors[i, :] = "background-color: #FFF7DB"  # 返信待ち優先
 
-    styler = (
+    return (
         base.style
         .set_properties(**{"font-size": "0.95rem"})
         .set_table_styles([{"selector": "th", "props": [("font-size", "0.9rem")]}])
         .apply(lambda _: colors, axis=None)
         .hide(axis="index")
     )
-    return styler
+
+def style_cells_keyword(df_disp_like: pd.DataFrame, kw: str, target_cols=("タスク","次アクション","備考")):
+    """
+    target_cols に含まれるセルで kw を含む部分を強調（背景淡黄）。
+    """
+    base = df_disp_like.copy()
+    # マスク作成
+    mask = pd.DataFrame(False, index=base.index, columns=base.columns)
+    if kw:
+        pattern = re.escape(str(kw))
+        for c in target_cols:
+            if c in base.columns:
+                mask[c] = base[c].astype(str).str.contains(pattern, na=False)
+
+    styles = pd.DataFrame("", index=base.index, columns=base.columns)
+    styles[mask] = "background-color: #FFF0B3;"
+
+    return (
+        base.style
+        .set_properties(**{"font-size": "0.95rem"})
+        .set_table_styles([{"selector": "th", "props": [("font-size", "0.9rem")]}])
+        .apply(lambda _: styles, axis=None)
+        .hide(axis="index")
+    )
 
 def _fmt_display(dt: pd.Timestamp) -> str:
-    if pd.isna(dt):
-        return "-"
+    if pd.isna(dt): return "-"
     try:
         ts = pd.Timestamp(dt)
-        if getattr(ts, "tzinfo", None) is not None:
-            ts = ts.tz_localize(None)
+        if getattr(ts, "tzinfo", None) is not None: ts = ts.tz_localize(None)
         dt = ts
-    except Exception:
-        pass
+    except Exception: pass
     return dt.strftime("%Y-%m-%d %H:%M:%S" if SAVE_WITH_TIME else "%Y-%m-%d")
 
 def compute_reply_mask(df_in: pd.DataFrame) -> pd.Series:
     rm = pd.Series(False, index=df_in.index)
     for k in ["返信待ち", "返信無し", "返信なし", "返信ない", "催促"]:
-        rm = (
-            rm
-            | df_in["次アクション"].str.contains(k, na=False)
-            | df_in["備考"].str.contains(k, na=False)
-        )
+        rm = rm | df_in["次アクション"].str.contains(k, na=False) | df_in["備考"].str.contains(k, na=False)
     return rm
 
 # ==============================
@@ -390,7 +426,7 @@ df = load_tasks()
 df_by_id = df.set_index("ID")
 
 # ==============================
-#       簡易ログイン（トークン方式）
+#       簡易ログイン
 # ==============================
 st.sidebar.header("ログイン")
 USERS = st.secrets.get("USERS", {})  # 例: {"都筑":"tokenA","二上":"tokenB"}
@@ -412,7 +448,6 @@ else:
 def _do_refresh():
     st.cache_data.clear()
     st.rerun()
-
 st.sidebar.button("最新を読み込む", on_click=_do_refresh)
 
 # ==============================
@@ -425,7 +460,6 @@ assignees = sorted([a for a in df["更新者"].dropna().unique().tolist() if str
 assignee_sel = st.sidebar.multiselect("担当者", assignees)
 kw = st.sidebar.text_input("キーワード（タスク/備考/次アクション）")
 
-# グローバルなフィルタ（タブでも利用）
 filtered_df = df.copy()
 if status_sel != "すべて":
     filtered_df = filtered_df[filtered_df["対応状況"] == status_sel]
@@ -453,7 +487,6 @@ c2.metric("対応中", int(status_counts.get("対応中", 0)))
 c3.metric("クローズ", int(status_counts.get("クローズ", 0)))
 c4.metric("返信待ち系", reply_count)
 
-# 全体感のざっくり棒グラフ
 st.bar_chart(status_counts.rename_axis("対応状況"), height=140, use_container_width=True)
 
 # ==============================
@@ -463,53 +496,88 @@ tab_list, tab_close, tab_add, tab_edit, tab_del = st.tabs(
     ["📋 一覧", "✅ クローズ候補", "➕ 新規追加", "✏️ 編集・削除", "🗑️ 一括削除"]
 )
 
-# 可能なら ColumnConfig を利用（古い Streamlit では graceful fallback）
+# ColumnConfig（古い Streamlit では無いことがあるのでフォールバック）
 try:
-    from streamlit import column_config as cc  # Streamlit >=1.25
+    from streamlit import column_config as cc
 except Exception:
     cc = None
 
 # ------------------------------
-# 📋 一覧
+# 📋 一覧（可読性強化）
 # ------------------------------
 with tab_list:
     st.subheader("一覧")
 
-    colq1, colq2 = st.columns([2, 1])
-    with colq1:
+    left, right = st.columns([2, 1])
+    with left:
         quick = st.radio("クイックフィルタ", ["すべて", "未対応", "対応中", "クローズ"], horizontal=True)
-    with colq2:
-        toggle_wait = st.toggle("返信待ちのみ")
+    with right:
+        show_sticky = st.toggle("左2列（状態/タスク）を固定", value=True)
 
     base = filtered_df.copy()
     if quick != "すべて":
         base = base[base["対応状況"] == quick]
 
-    if toggle_wait:
-        base = base[compute_reply_mask(base)]
+    disp_raw = base.copy()  # 生
+    disp = make_display_df(base)  # 表示用
 
-    disp_raw = base.copy()  # スタイリング用に“生”を保持
-    disp = make_display_df(base)
+    # 固定列CSS（環境により効かない場合あり）
+    if show_sticky:
+        # 1列目の幅（状態）はおよそ 110px を目安、タスク列はそれを基準にずらす
+        inject_sticky_css(first_col_width_px=110, second_col_offset_px=110)
 
-    # A) 高速＆安定（ColumnConfig）
-    df_kwargs = dict(use_container_width=True, hide_index=True, height=520)
+    # 表示モード切替
+    mode = st.radio(
+        "表示モード",
+        ["高速（推奨）", "高可読：行ハイライト", "高可読：行ハイライト＋キーワード強調"],
+        horizontal=True,
+        help="件数が多い場合は『高速』を推奨。Stylerを使うモードは重くなることがあります。",
+    )
+
+    # 列幅/書式（ColumnConfig）
+    df_kwargs = dict(use_container_width=True, hide_index=True, height=min(700, 100 + max(320, len(disp) * 34)))
     if cc is not None:
-        df_kwargs["column_config"] = {
-            "起票日": cc.DatetimeColumn("起票日", format="YYYY-MM-DD HH:mm"),
-            "更新日": cc.DatetimeColumn("更新日", format="YYYY-MM-DD HH:mm"),
-            "ソース": cc.LinkColumn("ソース", display_text="リンク", help="ID/リンクなど"),
-            "次アクション": cc.TextColumn("次アクション", width="large"),
-            "備考": cc.TextColumn("備考", width="large"),
-            "ID": cc.TextColumn("ID", help="内部ID"),
-        }
-    st.dataframe(disp, **df_kwargs)
+        COL_WIDTH = {"対応状況": 110, "更新者": 80, "ID": 220}
+        def _cfg_text(label, width="medium", help_=""):
+            # StreamlitのColumnConfig幅指定は "small/medium/large" が基本。px指定不可のため概ねの幅で調整。
+            return cc.TextColumn(label, width=width, help=help_)
+        def _cfg_date(label): return cc.DatetimeColumn(label, format="YYYY-MM-DD HH:mm", width="small")
+        def _cfg_link(label): return cc.LinkColumn(label, display_text="リンク", width="small")
 
-    # B) 視認性重視（やや重い）：チェックで有効化
-    use_highlight = st.checkbox("行のハイライトを有効にする（やや重くなります）", value=False)
-    if use_highlight:
-        # 返信待ちマスクは disp_raw の行順に合わせる
-        rm = compute_reply_mask(disp_raw)
-        st.dataframe(style_rows(disp_raw, rm), use_container_width=True, height=520)
+        df_kwargs["column_config"] = {
+            "タスク": _cfg_text("タスク", width="large"),
+            "次アクション": _cfg_text("次アクション", width="large"),
+            "備考": _cfg_text("備考", width="large"),
+            "対応状況": _cfg_text("対応状況", width="small"),
+            "更新者": _cfg_text("更新者", width="small"),
+            "起票日": _cfg_date("起票日"),
+            "更新日": _cfg_date("更新日"),
+            "ソース": _cfg_link("ソース"),
+            "ID": _cfg_text("ID", width="medium", help_="内部ID"),
+        }
+
+    # 表示
+    if mode == "高速（推奨）":
+        st.dataframe(disp, **df_kwargs)
+
+    elif mode == "高可読：行ハイライト":
+        # 返信待ち判定は disp_raw の行順に合わせる
+        rm = compute_reply_mask(disp_raw).reindex(disp.index)
+        sty = style_rows(disp, rm)
+        st.dataframe(sty, use_container_width=True, height=df_kwargs["height"])
+
+    else:  # 行ハイライト + キーワード強調
+        rm = compute_reply_mask(disp_raw).reindex(disp.index)
+        # まず行色
+        sty = style_rows(disp, rm)
+        # さらにキーワード強調を上書き（対象セルのみ淡黄）
+        if kw:
+            sty_kw = style_cells_keyword(disp, kw)
+            # pandas Styler は合成がやや難しいため、簡易的に「キーワード強調版」を別枠で表示
+            st.caption("※ 行ハイライトに加えて、セル内のキーワードも淡黄で強調表示しています。")
+            st.dataframe(sty_kw, use_container_width=True, height=df_kwargs["height"])
+        else:
+            st.dataframe(sty, use_container_width=True, height=df_kwargs["height"])
 
 # ------------------------------
 # ✅ クローズ候補
@@ -581,7 +649,7 @@ with tab_add:
         status = c3.selectbox("対応状況", ["未対応", "対応中", "クローズ"], index=1)
 
         task = st.text_input("タスク（件名）")
-        fixed_assignees = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])  # 任意固定
+        fixed_assignees = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])
         ass_choices = sorted(set([a for a in df["更新者"].tolist() if str(a).strip() != ""] + list(fixed_assignees)))
         assignee = st.selectbox("更新者（担当）", options=ass_choices)
 
@@ -647,7 +715,7 @@ with tab_edit:
                 key=f"status_{choice_id}"
             )
 
-            fixed_assignees_e = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])  # 任意固定
+            fixed_assignees_e = st.secrets.get("FIXED_OWNERS", ["都筑", "二上", "三平", "成瀬", "柿野", "花田", "武藤", "島浦"])
             ass_choices_e = sorted(set([a for a in df["更新者"].tolist() if str(a).strip() != ""] + list(fixed_assignees_e)))
             default_assignee = df_by_id.loc[choice_id, "更新者"]
             ass_index = ass_choices_e.index(default_assignee) if default_assignee in ass_choices_e else 0
@@ -657,9 +725,7 @@ with tab_edit:
             notes_e = st.text_area("備考", df_by_id.loc[choice_id, "備考"], key=f"notes_{choice_id}")
             source_e = st.text_input("ソース（ID/リンクなど）", df_by_id.loc[choice_id, "ソース"], key=f"source_{choice_id}")
 
-            st.caption(
-                f"起票日: {_fmt_display(df_by_id.loc[choice_id, '起票日'])} / 最終更新: {_fmt_display(df_by_id.loc[choice_id, '更新日'])}"
-            )
+            st.caption(f"起票日: {_fmt_display(df_by_id.loc[choice_id, '起票日'])} / 最終更新: {_fmt_display(df_by_id.loc[choice_id, '更新日'])}")
 
             col_ok, col_spacer, col_del = st.columns([1, 1, 1])
             submit_edit = col_ok.form_submit_button("更新する", type="primary")
@@ -712,7 +778,7 @@ with tab_del:
     st.subheader("一括削除（複数選択）")
     del_targets = st.multiselect(
         "削除したいタスク（複数選択）",
-        options=filtered_df["ID"].tolist(),  # サイドバーのフィルタ結果を利用
+        options=filtered_df["ID"].tolist(),
         format_func=lambda _id: f'{df_by_id.loc[_id,"タスク"]} / {df_by_id.loc[_id,"更新者"]} / {_fmt_display(df_by_id.loc[_id,"更新日"])}'
     )
     confirm_word_bulk = st.text_input("確認ワード（DELETE と入力）", value="", key="confirm_bulk")
