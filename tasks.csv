@@ -940,7 +940,7 @@ ISM→https://teams.microsoft.com/l/message/19:7e876c1536f541c89b617949bca08eab@
 に似たような事象ですが、エラーの内容が違うため起票しております。",,ee93aed5-4c7e-4672-a1dd-c3cfa042cc28
 2026-01-01 00:00:00,2026-01-20 09:30:04,[inoc:10484] RE: 外部インターネット接続時のIPアドレス範囲について,クローズ,都筑,返信待ち,"Tier2に相談案件
 →IPアドレスを伝えるメール返信後、ユーザーも納得しているようだったためクローズ。(1/18 柿野)",,a5a0d309-ff23-4a1f-86ae-ba3e517b4f50
-2026-01-01 18:17:06,2026-01-16 21:13:35,【対応依頼】pim-pit-i-ju01ログイン失敗複数検知について,対応中,都筑,メール返信きたらTeamsでユーザーに共有してください,"SOCにて10.207.137.10/pim-pit-i-ju01よりKerberos事前認証の失敗を検知しております。
+2026-01-01 18:17:06,2026-01-24 05:59:00,【対応依頼】pim-pit-i-ju01ログイン失敗複数検知について,対応中,都筑,追えていなくて現状どういう状態かわからない,"SOCにて10.207.137.10/pim-pit-i-ju01よりKerberos事前認証の失敗を検知しております。
 該当機器に関して以下のご対応をお願いできますでしょうか
  
 ・「10.207.137.10/pim-pit-i-ju01」で複数のPIM用アカウントに対して10月1日からログイン失敗ログが確認されていますが
@@ -951,8 +951,7 @@ ISM→https://teams.microsoft.com/l/message/19:7e876c1536f541c89b617949bca08eab@
  
 メールでIIJに調査依頼中です
 [inoc:9566] RE: [inoc:9562] ReRE: 【自動受付】PIM問い合わせ対応依頼（緊急）(uom41278361)
-
-https://teams.microsoft.com/l/message/19:05b271fbb87f46899c45cd783e471ec9@thread.tacv2/1767183625177?tenantId=e7ffea03-7457-438f-9c5d-c9a2d0449ac0&groupId=aa7139e8-1530-41a1-95a0-bb35e64b5176&parentMessageId=1767183625177&teamName=%E3%80%90%23%E3%80%91-iNOC%E9%81%8B%E7%94%A8%E7%9B%A3%E8%A6%96(Op%C3%97Sec)&channelName=02_%E4%BD%9C%E6%A5%AD%E4%BE%9D%E9%A0%BC&createdTime=1767183625177",[inoc:9566] RE: [inoc:9562] ReRE: 【自動受付】PIM問い合わせ対応依頼（緊急）(uom41278361)　https://teams.microsoft.com/l/message/19:05b271fbb87f46899c45cd783e471ec9@thread.tacv2/1767183625177?tenantId=e7ffea03-7457-438f-9c5d-c9a2d0449ac0&groupId=aa7139e8-1530-41a1-95a0-bb35e64b5176&parentMessageId=1767183625177&teamName=%E3%80%90%23%E3%80%91-iNOC%E9%81%8B%E7%94%A8%E7%9B%A3%E8%A6%96(Op%C3%97Sec)&channelName=02_%E4%BD%9C%E6%A5%AD%E4%BE%9D%E9%A0%BC&createdTime=1767183625177,bf9ff81f-449e-423a-8148-6772d6203f0d
+",　https://teams.microsoft.com/l/message/19:05b271fbb87f46899c45cd783e471ec9@thread.tacv2/1767183625177?tenantId=e7ffea03-7457-438f-9c5d-c9a2d0449ac0&groupId=aa7139e8-1530-41a1-95a0-bb35e64b5176&parentMessageId=1767183625177&teamName=%E3%80%90%23%E3%80%91-iNOC%E9%81%8B%E7%94%A8%E7%9B%A3%E8%A6%96(Op%C3%97Sec)&channelName=02_%E4%BD%9C%E6%A5%AD%E4%BE%9D%E9%A0%BC&createdTime=1767183625177,bf9ff81f-449e-423a-8148-6772d6203f0d
 2026-01-04 00:09:58,2026-01-16 21:13:35,[inoc:9340] RE: 【ご相談】ビル停電時の各NW機器の対応について,クローズ,都筑,クローズ,"統合IP網の機器に関しては全文検索でラック実装図を探してホスト名、機種名、ラック内の配置を伝えた。（2020年の古いものである旨はお伝え済）
 NHK-WANの機器はboxフォルダ内にある91_ラック実装図に資料があったため同じくホスト名、機種名、ラック内の配置をお伝え",,cc3136aa-2580-4a30-8912-45fdf71bce1b
 2026-01-05 18:10:51,2026-01-16 21:13:35,[inoc:9661] iNOCアカウントパスワードリセットについて,クローズ,都筑,"対応済みのため本件クローズ
